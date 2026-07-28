@@ -39,14 +39,68 @@ bundle names it or the user asks) because MSFragger/IonQuant are license-gated.
 instead of DIA-NN — same job, no license problem. Ask "academic or commercial?" before
 a DIA run if it isn't already clear.
 
+## Public program sources (anyone, any OS — cite these for non-Core / external users)
+
+This skill is used **outside** UC Davis and the Core. Never assume the internal
+`/quobyte/proteomics-grp` copy of a tool exists — **always point the user to the public
+source** and a way to run it on *their* OS (macOS, Windows via WSL2 **or** native
+Windows, or Linux). `setup.sh`/`acquire_tools.sh` fetch the free ones automatically.
+
+| Program | Public source | Platforms | Install / note |
+|---|---|---|---|
+| **DIA-NN** (Academia) | https://github.com/vdemichev/DiaNN/releases | Windows, Linux | Windows GUI+CLI, or Linux binary; academic / non-profit only. `acquire_tools.sh` fetches the Linux build. DDA since 2.3 (`--dda`). |
+| **Sage** | https://github.com/lazear/sage/releases | Win, macOS, Linux | MIT; single static binary. |
+| **AlphaDIA** | https://github.com/MannLabs/alphadia | Win, macOS, Linux | Apache-2.0 (commercial-OK); `pip install alphadia`, GPU recommended. |
+| **FragPipe** (MSFragger/IonQuant) | https://github.com/Nesvilab/FragPipe/releases | Win, macOS, Linux | Java GUI; MSFragger/IonQuant need the user's own (free-academic) license. |
+| **ThermoRawFileParser** | https://github.com/compomics/ThermoRawFileParser/releases | Win, macOS, Linux | `.raw`→mzML; cross-platform .NET. |
+| **ProteoWizard / msconvert** | https://proteowizard.sourceforge.io/ | Windows (native); Linux/macOS via Docker | vendor→mzML; Linux via the `chambm/pwiz-...` Docker image. |
+| **.NET 8 runtime** | https://dotnet.microsoft.com/download/dotnet/8.0 · installer script https://dot.net/v1/dotnet-install.sh | Win, macOS, Linux | needed only so the **Linux** DIA-NN binary can read `.raw`; `ensure_dotnet8.sh` installs 8.0.latest. **Native Windows doesn't need it.** |
+| **UniProt proteomes (FASTA)** | https://www.uniprot.org/proteomes/ | web / REST | e.g. `UP000005640` (human); `fetch_fasta.py` streams it. |
+| **Contaminants (cRAP)** | https://www.thegpm.org/crap/ | web | `fetch_fasta.py --add-contaminants` appends a maintained set. |
+
+**Rule:** whenever you tell a user to run a program, give the public link **+** the exact
+command **+** an OS-appropriate path — not a HIVE/`/quobyte` path they can't reach.
+
 ## Per-engine invocation & output adapter (`run_search.py`)
 
 ### DIA-NN (native contract — no adapter)
 ```
 <cmd> --cfg <bundle diann.cfg> --f <file> [--f <file> ...] \
-      --fasta <fasta> --out report.parquet --threads N
+      --fasta <fasta> --out report.parquet --threads N [--dda]
 ```
 `report.parquet` is already the DE contract — `run_de.R` reads it directly.
+
+**DDA data (DIA-NN 2.6+).** DIA-NN 2.3+ can search DDA / DDA-PASEF with **`--dda`**
+(`run_search.py` adds it automatically when the bundle's acquisition is `DDA`). Notes:
+- `--dda` **must** be used with DDA and **must not** be used with DIA data.
+- QuantUMS is auto-disabled on DDA; PTM-localisation probabilities are unreliable on DDA.
+- For DDA **quant**, DIA-NN recommends extra MS1 filtering on `Ms1.Global.Q.Value`
+  (< 0.0001–0.01) and `Ms1.Global.Quality` (> 0.5–0.9), optionally `Ms1.Q.Value` /
+  `Averagine`. Standard DIA/DDA q-value filters still apply.
+- It's officially "beta", but performs strongly — on UC Davis nail (Exploris, 67 runs)
+  it matched/beat the delivered FragPipe/Scaffold result at ~equal keratin coverage.
+- Default routing still sends DDA → Sage (validated); use `--engine diann` (or a
+  DDA+DIA-NN workflow) to search DDA with DIA-NN.
+
+**Reading Thermo `.raw` directly (the .NET 8 gotcha — Linux only).** On **native
+Windows** DIA-NN reads `.raw` out of the box (skip this whole section). On **Linux**
+(incl. WSL2 and HIVE) the 2.6 *native* binary reads `.raw` via a bundled .NET
+(ThermoFisher.CommonCore) component and needs a **.NET 8 runtime ≥ 8.0.17** on PATH. Without it, DIA-NN prints
+`ERROR: cannot read .raw files ... .NET Runtime 8: 8.0.17 or later` and processes **0
+files**. It does a HARD ≥ 8.0.17 check: an older 8.0.x (e.g. a cluster's `8.0.4`
+module) is **rejected**, and a .NET 9 runtime is **not** used (rollForward is
+LatestMinor — it won't cross the major version). Fix, done for you by
+**`scripts/ensure_dotnet8.sh`** (idempotent; run it on a login node — it needs
+internet, compute nodes usually don't):
+```
+export DOTNET_ROOT="$(bash scripts/ensure_dotnet8.sh | tail -1)"   # installs 8.0.latest if missing
+export PATH="$DOTNET_ROOT:$PATH"
+```
+`run_search.py` calls this automatically whenever DIA-NN inputs include `.raw` (inline
+run, and baked into the emitted sbatch as a preamble). When it's right, DIA-NN logs
+`.NET runtime found, Thermo .raw support enabled`. Alternative with **no** .NET: feed
+`.mzML` (DIA-NN reads those natively) — convert `.raw`→mzML with ThermoRawFileParser /
+msconvert if you don't already have them.
 
 ### AlphaDIA (commercial-OK DIA; adapter required)
 Apache-2.0 — the open-source alternative to DIA-NN for non-academic users. Library-free:
@@ -87,6 +141,26 @@ Apache-2.0 — the open-source alternative to DIA-NN for non-academic users. Lib
 - **Adapter:** `combined_protein.tsv` per-sample `MaxLFQ Intensity` columns →
   DIA-NN-shaped `report.parquet`.
 - Needs Java 9+; MSFragger/IonQuant must already be licensed/present.
+- **Reading Thermo `.raw`:** MSFragger reads `.raw` directly via
+  `tools/ext/thermo/BatmassIoThermoServer.exe` — a **Windows .NET-Framework** exe that on
+  **Linux needs `mono` on PATH** (the .NET 8 runtime does NOT run it — Framework ≠ Core).
+  Native Windows/macOS: works out of the box. On a mono-less Linux cluster you get
+  *"Could not find Batmass-IO Thermo binary"* + `Scans = 0` → either install mono
+  (conda-forge `mono`, then `export PATH=<monoenv>/bin:$PATH` in the job) or pre-centroid
+  to mzML. (On HIVE, mono 6.12 is installed at `/quobyte/proteomics-grp/conda_envs/mono`.)
+- **Other DDA gotchas:** IonQuant MBR needs experiment groups in the manifest — set
+  `ionquant.mbr=0` if you only want peptide/protein IDs; **profile-mode mzML** fail
+  `CheckCentroid` (centroid during conversion, or read `.raw` so MSFragger vendor-centroids);
+  the LFQ-MBR template ships **without** a `database.db-path` line (add one); and the
+  headless run's exit code can read 0 even on a crash — **verify the output file exists**.
+- **Which output file to verify (don't false-alarm):** the file depends on the run
+  type. A **single-experiment / peptide-ID run** (`ionquant.mbr=0`, one experiment)
+  writes **`psm.tsv` + `peptide.tsv` + `protein.tsv` + `ion.tsv`** — there is **no**
+  `combined_peptide.tsv`/`combined_protein.tsv` (those only appear with **multi-experiment
+  IonQuant LFQ**). A watcher that checks for `combined_*.tsv` will wrongly report
+  "no output" on a perfectly good ID run. Success check = `peptide.tsv` (and `psm.tsv`)
+  present and non-empty; use `combined_protein.tsv` only when the manifest defines ≥2
+  experiment groups and you asked for the cross-run LFQ matrix.
 
 ## The adapters are the test surface
 

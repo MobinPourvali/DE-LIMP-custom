@@ -113,7 +113,7 @@ def audit_acquisition(findings, acq_json):
         add(findings, "instrument_mix", "PASS", f"Single instrument: {instr[0]}.")
 
 
-def audit_matrix(findings, em_path, min_proteins, max_missing):
+def audit_matrix(findings, em_path, min_proteins, max_missing, keratin_sample=False):
     rows = read_csv(em_path)
     if not rows:
         add(findings, "id_depth", "WARN", "Expression matrix is empty.")
@@ -142,20 +142,29 @@ def audit_matrix(findings, em_path, min_proteins, max_missing):
             "weakens quantification; check sample quality and whether missingness differs by group.")
     else:
         add(findings, "missingness", "PASS", f"{frac*100:.0f}% missing values.")
-    # contamination
+    # contamination. Keratin is a contaminant for MOST matrices, but is the ANALYTE
+    # for keratin samples (nail / hair / wool / skin / feather) — never flag it there.
+    # (see references/anomaly-checks.md "Keratin-matrix samples").
+    pats = tuple(p for p in CONTAMINANT_PATTERNS if not (keratin_sample and p in ("KRT", "KRTAP")))
+    words = tuple(w for w in CONTAMINANT_WORDS if not (keratin_sample and w == "keratin"))
     glab = "Genes" if "Genes" in rows[0] else ("Protein.Names" if "Protein.Names" in rows[0] else None)
     if glab:
         names = [(r.get(glab) or "").upper() for r in rows]
-        hits = [n for n in names if any(n.startswith(p) or p in n for p in CONTAMINANT_PATTERNS)
-                or any(w.upper() in n for w in CONTAMINANT_WORDS)]
+        hits = [n for n in names if any(n.startswith(p) or p in n for p in pats)
+                or any(w.upper() in n for w in words)]
+        label = "trypsin/casein" if keratin_sample else "keratins/trypsin/casein"
         if hits:
             frac_c = len(hits) / n_prot
             status = "WARN" if frac_c >= 0.02 or len(hits) >= 10 else "PASS"
             add(findings, "contamination", status,
-                f"{len(hits)} likely contaminant protein(s) detected (keratins/trypsin/casein). "
+                f"{len(hits)} likely contaminant protein(s) detected ({label}). "
                 + ("A high contaminant load can distort normalization and quant — consider filtering them."
-                   if status == "WARN" else "Low level; usually fine."),
+                   if status == "WARN" else "Low level; usually fine.")
+                + (" [keratin-matrix sample: keratins treated as the analyte, not flagged]" if keratin_sample else ""),
                 {"examples": sorted(set(hits))[:10]})
+        elif keratin_sample:
+            add(findings, "contamination", "PASS",
+                "Keratin-matrix sample — keratins are the analyte (not flagged); no trypsin/casein issue.")
 
 
 def audit_de(findings, de_dir, adjp, logfc):
@@ -198,6 +207,9 @@ def main():
     ap.add_argument("--logfc", type=float, default=1.0)
     ap.add_argument("--min-proteins", type=int, default=500)
     ap.add_argument("--max-missing", type=float, default=0.5)
+    ap.add_argument("--keratin-sample", action="store_true",
+                    help="sample IS keratin (nail/hair/wool/skin/feather) — keratin is the analyte, "
+                         "not a contaminant; do not flag KRT/KRTAP/keratin")
     a = ap.parse_args()
 
     findings = []
@@ -206,7 +218,7 @@ def main():
     if a.acquisition_json and os.path.exists(a.acquisition_json):
         audit_acquisition(findings, a.acquisition_json)
     if a.de_dir and os.path.exists(os.path.join(a.de_dir, "Expression_Matrix.csv")):
-        audit_matrix(findings, os.path.join(a.de_dir, "Expression_Matrix.csv"), a.min_proteins, a.max_missing)
+        audit_matrix(findings, os.path.join(a.de_dir, "Expression_Matrix.csv"), a.min_proteins, a.max_missing, a.keratin_sample)
     if a.de_dir and os.path.isdir(a.de_dir):
         audit_de(findings, a.de_dir, a.adjp, a.logfc)
 

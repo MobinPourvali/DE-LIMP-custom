@@ -1,0 +1,702 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Install the UC Davis Proteomics Core pipeline for Claude</title>
+<meta name="description" content="Step-by-step guide to installing the ucdavis-proteomics-core-pipeline skill in Claude Code or Claude Desktop, and running your first proteomics analysis.">
+<style>
+:root {
+  --navy: #1e3a5f;
+  --navy-mid: #2c5282;
+  --navy-soft: #ebf4ff;
+  --green: #2f7d54;
+  --green-soft: #e8f5ee;
+  --amber: #b45309;
+  --amber-soft: #fdf6e7;
+  --text: #16212e;
+  --text-mid: #4a5a6d;
+  --text-dim: #6c7c8d;
+  --bg: #ffffff;
+  --bg-alt: #f5f8fb;
+  --border: #dde5ee;
+  --border-soft: #eaf0f6;
+  --term-bg: #16283d;
+  --term-text: #dce8f5;
+  --term-dim: #7d99b5;
+  --shadow: 0 1px 2px rgba(22,40,61,.06), 0 6px 18px rgba(22,40,61,.06);
+  --serif: "Iowan Old Style", "Charter", "Palatino Linotype", Palatino, Georgia, serif;
+  --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+  --col: 40rem;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --navy: #7fb2e0; --navy-mid: #9cc6ec; --navy-soft: #16304a;
+    --green: #6cc396; --green-soft: #14301f;
+    --amber: #e0a94a; --amber-soft: #31260f;
+    --text: #e7eef6; --text-mid: #b3c3d3; --text-dim: #8b9cae;
+    --bg: #0d1721; --bg-alt: #131f2b; --border: #253546; --border-soft: #1c2937;
+    --term-bg: #060d15; --term-text: #d7e5f3; --term-dim: #7089a3;
+    --shadow: 0 1px 2px rgba(0,0,0,.4), 0 6px 18px rgba(0,0,0,.3);
+  }
+}
+:root[data-theme="dark"] {
+  --navy: #7fb2e0; --navy-mid: #9cc6ec; --navy-soft: #16304a;
+  --green: #6cc396; --green-soft: #14301f;
+  --amber: #e0a94a; --amber-soft: #31260f;
+  --text: #e7eef6; --text-mid: #b3c3d3; --text-dim: #8b9cae;
+  --bg: #0d1721; --bg-alt: #131f2b; --border: #253546; --border-soft: #1c2937;
+  --term-bg: #060d15; --term-text: #d7e5f3; --term-dim: #7089a3;
+  --shadow: 0 1px 2px rgba(0,0,0,.4), 0 6px 18px rgba(0,0,0,.3);
+}
+:root[data-theme="light"] {
+  --navy: #1e3a5f; --navy-mid: #2c5282; --navy-soft: #ebf4ff;
+  --green: #2f7d54; --green-soft: #e8f5ee;
+  --amber: #b45309; --amber-soft: #fdf6e7;
+  --text: #16212e; --text-mid: #4a5a6d; --text-dim: #6c7c8d;
+  --bg: #ffffff; --bg-alt: #f5f8fb; --border: #dde5ee; --border-soft: #eaf0f6;
+  --term-bg: #16283d; --term-text: #dce8f5; --term-dim: #7d99b5;
+  --shadow: 0 1px 2px rgba(22,40,61,.06), 0 6px 18px rgba(22,40,61,.06);
+}
+
+* { box-sizing: border-box; }
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--sans);
+  font-size: 17px;
+  line-height: 1.65;
+  -webkit-font-smoothing: antialiased;
+}
+a { color: var(--navy-mid); text-underline-offset: 3px; text-decoration-thickness: 1px; }
+a:hover { color: var(--green); }
+:focus-visible { outline: 2px solid var(--green); outline-offset: 3px; border-radius: 3px; }
+
+.wrap { max-width: 54rem; margin: 0 auto; padding: 0 1.5rem; }
+.prose { max-width: var(--col); }
+
+/* ---------- masthead ---------- */
+header.mast {
+  background: var(--bg-alt);
+  border-bottom: 1px solid var(--border);
+  padding: 3.25rem 0 2.5rem;
+}
+.eyebrow {
+  font-family: var(--mono);
+  font-size: .72rem;
+  letter-spacing: .13em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+  margin: 0 0 1rem;
+}
+h1 {
+  font-family: var(--serif);
+  font-weight: 600;
+  font-size: clamp(2rem, 5vw, 2.9rem);
+  line-height: 1.12;
+  letter-spacing: -.015em;
+  text-wrap: balance;
+  margin: 0 0 .85rem;
+}
+.standfirst {
+  font-size: 1.13rem;
+  color: var(--text-mid);
+  max-width: var(--col);
+  margin: 0 0 1.6rem;
+}
+.chips { display: flex; flex-wrap: wrap; gap: .5rem; }
+.chip {
+  font-family: var(--mono);
+  font-size: .74rem;
+  letter-spacing: .04em;
+  padding: .3rem .6rem;
+  border-radius: 4px;
+  border: 1px solid var(--border);
+  background: var(--bg);
+  color: var(--text-mid);
+}
+.chip.on { background: var(--green-soft); border-color: transparent; color: var(--green); }
+
+/* ---------- sections ---------- */
+main { padding: 0 0 5rem; }
+section { padding: 3rem 0 0; }
+h2 {
+  font-family: var(--serif);
+  font-size: 1.6rem;
+  font-weight: 600;
+  letter-spacing: -.01em;
+  text-wrap: balance;
+  margin: 0 0 .3rem;
+  padding-top: 1.4rem;
+  border-top: 2px solid var(--navy);
+}
+h3 {
+  font-size: 1.03rem;
+  font-weight: 650;
+  margin: 2rem 0 .5rem;
+  letter-spacing: -.005em;
+}
+.lede { color: var(--text-mid); max-width: var(--col); margin: .4rem 0 1.5rem; }
+p { max-width: var(--col); margin: 0 0 1rem; }
+ul.plain { max-width: var(--col); margin: 0 0 1rem; padding-left: 1.15rem; }
+ul.plain li { margin-bottom: .45rem; }
+strong { font-weight: 650; }
+code {
+  font-family: var(--mono);
+  font-size: .87em;
+  background: var(--bg-alt);
+  border: 1px solid var(--border-soft);
+  border-radius: 4px;
+  padding: .1em .35em;
+  word-break: break-word;
+}
+
+/* ---------- numbered steps ---------- */
+ol.steps { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 2.25rem; }
+ol.steps > li { display: grid; grid-template-columns: 2.4rem 1fr; gap: 1.1rem; align-items: start; }
+.num {
+  font-family: var(--mono);
+  font-size: .8rem;
+  font-weight: 600;
+  color: var(--navy);
+  background: var(--navy-soft);
+  border-radius: 50%;
+  width: 2.1rem; height: 2.1rem;
+  display: flex; align-items: center; justify-content: center;
+  margin-top: .1rem;
+  font-variant-numeric: tabular-nums;
+}
+.step-body { min-width: 0; }
+.step-body > h3 { margin-top: 0; }
+.step-body > p:last-child { margin-bottom: 0; }
+
+/* ---------- command blocks ---------- */
+.cmd {
+  position: relative;
+  background: var(--term-bg);
+  color: var(--term-text);
+  border-radius: 8px;
+  margin: .9rem 0 1rem;
+  box-shadow: var(--shadow);
+  overflow: hidden;
+}
+.cmd-label {
+  font-family: var(--mono);
+  font-size: .68rem;
+  letter-spacing: .12em;
+  text-transform: uppercase;
+  color: var(--term-dim);
+  padding: .6rem .95rem .1rem;
+}
+.cmd pre {
+  margin: 0;
+  padding: .55rem .95rem 1rem;
+  overflow-x: auto;
+  font-family: var(--mono);
+  font-size: .88rem;
+  line-height: 1.75;
+}
+.cmd pre .p { color: var(--term-dim); user-select: none; }
+.copy {
+  position: absolute; top: .5rem; right: .5rem;
+  font-family: var(--sans); font-size: .72rem; font-weight: 600;
+  color: var(--term-dim); background: transparent;
+  border: 1px solid rgba(125,153,181,.35); border-radius: 5px;
+  padding: .25rem .55rem; cursor: pointer;
+  transition: color .15s, border-color .15s;
+}
+.copy:hover { color: var(--term-text); border-color: rgba(125,153,181,.8); }
+.copy.done { color: #6cc396; border-color: #6cc396; }
+
+/* say-this block (what to type to Claude, not a shell command) */
+.say {
+  border-left: 3px solid var(--green);
+  background: var(--green-soft);
+  border-radius: 0 8px 8px 0;
+  padding: 1rem 1.15rem;
+  margin: 1rem 0 1.25rem;
+  max-width: var(--col);
+}
+.say .cmd-label { padding: 0 0 .35rem; color: var(--green); }
+.say p { font-size: 1.02rem; margin: 0; color: var(--text); }
+
+/* ---------- cards ---------- */
+.two { display: grid; grid-template-columns: repeat(auto-fit, minmax(17rem, 1fr)); gap: 1.1rem; margin: 1.25rem 0; }
+.card {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 1.25rem 1.35rem 1.4rem;
+  background: var(--bg);
+}
+.card h3 { margin: 0 0 .15rem; font-size: 1.02rem; }
+.card .sub { font-size: .84rem; color: var(--text-dim); margin: 0 0 .9rem; }
+.card p, .card ul.plain { max-width: none; }
+.card .cmd { margin-bottom: .6rem; }
+
+/* ---------- callout ---------- */
+.note {
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--amber);
+  background: var(--amber-soft);
+  border-radius: 0 8px 8px 0;
+  padding: 1rem 1.2rem;
+  margin: 1.4rem 0;
+  max-width: var(--col);
+}
+.note p:last-child { margin-bottom: 0; }
+.note .tag {
+  font-family: var(--mono); font-size: .68rem; letter-spacing: .12em;
+  text-transform: uppercase; color: var(--amber); display: block; margin-bottom: .35rem;
+}
+
+/* ---------- tables ---------- */
+.tw { overflow-x: auto; margin: 1.25rem 0; border: 1px solid var(--border); border-radius: 10px; }
+table { border-collapse: collapse; width: 100%; font-size: .93rem; }
+th, td { text-align: left; padding: .7rem .95rem; border-bottom: 1px solid var(--border-soft); vertical-align: top; }
+thead th {
+  font-family: var(--mono); font-size: .7rem; letter-spacing: .1em; text-transform: uppercase;
+  color: var(--text-dim); background: var(--bg-alt); border-bottom: 1px solid var(--border);
+  white-space: nowrap;
+}
+tbody tr:last-child td { border-bottom: none; }
+td code { background: transparent; border: none; padding: 0; }
+
+/* ---------- footer ---------- */
+footer {
+  border-top: 1px solid var(--border);
+  background: var(--bg-alt);
+  padding: 2.25rem 0 3rem;
+  font-size: .92rem;
+  color: var(--text-mid);
+}
+footer p { max-width: var(--col); }
+
+@media (max-width: 34rem) {
+  body { font-size: 16px; }
+  ol.steps > li { grid-template-columns: 1.9rem 1fr; gap: .8rem; }
+  .num { width: 1.75rem; height: 1.75rem; font-size: .72rem; }
+}
+@media print {
+  .copy { display: none; }
+  body { font-size: 11pt; }
+  .cmd { background: #f3f3f3; color: #111; box-shadow: none; border: 1px solid #ccc; }
+  .cmd pre .p, .cmd-label { color: #666; }
+}
+</style>
+</head>
+<body>
+
+<header class="mast">
+  <div class="wrap">
+    <p class="eyebrow">UC Davis Proteomics Core &middot; DE-LIMP</p>
+    <h1>Analyze your proteomics data by asking Claude</h1>
+    <p class="standfirst">
+      This guide installs a skill that takes you from raw mass-spec files to a list of
+      differentially expressed proteins &mdash; search, statistics, figures, and a written
+      report &mdash; without you assembling a pipeline. It takes about five minutes to set up,
+      and you only do it once.
+    </p>
+    <div class="chips">
+      <span class="chip on">ucdavis-proteomics-core-pipeline</span>
+      <span class="chip">macOS &middot; Windows &middot; Linux</span>
+      <span class="chip">No admin rights needed</span>
+    </div>
+  </div>
+</header>
+
+<main>
+
+<section id="what">
+  <div class="wrap">
+    <h2>What it does</h2>
+    <p class="lede">
+      You point it at a folder of raw files and describe your experiment in plain words. It
+      handles everything else.
+    </p>
+    <p>
+      The skill works out whether your data is DIA or DDA and which instrument produced it,
+      then pulls a validated workflow from the DE-LIMP repository rather than inventing
+      parameters. It installs its own search engine, fetches the right protein database for
+      your organism, runs the search, and carries the results through differential expression
+      analysis in <em>limpa</em>/<em>limma</em>.
+    </p>
+    <p>
+      What you get back is a folder containing volcano plots and PCA, a results table per
+      comparison, a written interpretation of your data in both Markdown and Word, a methods
+      paragraph you can paste into a manuscript, and a reproducibility bundle that lets
+      someone else re-run the exact analysis. It also audits your experimental design and
+      stops if something is wrong &mdash; a group with no replicates, a batch confounded with
+      your biology, or contamination that could masquerade as a real result.
+    </p>
+  </div>
+</section>
+
+<section id="before">
+  <div class="wrap">
+    <h2>Before you start</h2>
+    <p class="lede">Three things. Nothing else needs installing &mdash; the skill sets up its own toolchain the first time it runs.</p>
+
+    <h3>1. Claude, in one of two forms</h3>
+    <p>
+      Either <strong>Claude Code</strong> (runs in a terminal) or the <strong>Claude Desktop</strong>
+      app. Both work; the install steps differ slightly and both are covered below. If you have
+      neither and aren't sure which to pick, Claude Desktop is the gentler start.
+    </p>
+    <p>If you're going the terminal route and don't have Claude Code yet, install it first:</p>
+    <div class="cmd" data-copy="curl -fsSL https://claude.ai/install.sh | bash">
+      <button class="copy" type="button">Copy</button>
+      <div class="cmd-label">macOS and Linux</div>
+      <pre><code>curl -fsSL https://claude.ai/install.sh | bash</code></pre>
+    </div>
+    <div class="cmd" data-copy="irm https://claude.ai/install.ps1 | iex">
+      <button class="copy" type="button">Copy</button>
+      <div class="cmd-label">Windows, in PowerShell</div>
+      <pre><code>irm https://claude.ai/install.ps1 | iex</code></pre>
+    </div>
+    <p>Then run <code>claude</code> to start it, and <code>claude --version</code> if you want to confirm it's there.</p>
+
+    <h3>2. Your raw mass-spec files</h3>
+    <p>
+      Bruker <code>.d</code> folders, Thermo <code>.raw</code> files, or <code>.mzML</code>. Keep them
+      together in one folder. You do not need to convert or rename anything.
+    </p>
+
+    <h3>3. Two facts about your experiment</h3>
+    <p>
+      The <strong>organism</strong> (this determines the protein database, and it cannot be
+      detected from the files), and <strong>which samples belong to which group</strong>. You can
+      describe the groups in words or hand over a spreadsheet &mdash; whatever you already have.
+    </p>
+  </div>
+</section>
+
+<section id="install">
+  <div class="wrap">
+    <h2>Install the skill</h2>
+    <p class="lede">
+      Two commands, or a few clicks. You do this once; it stays installed.
+    </p>
+
+    <div class="two">
+      <div class="card">
+        <h3>In Claude Code</h3>
+        <p class="sub">The terminal version</p>
+        <p>Type these two commands at the Claude Code prompt, one after the other:</p>
+        <div class="cmd" data-copy="/plugin marketplace add bsphinney/DE-LIMP">
+          <button class="copy" type="button">Copy</button>
+          <div class="cmd-label">Step one &mdash; add the source</div>
+          <pre><code>/plugin marketplace add bsphinney/DE-LIMP</code></pre>
+        </div>
+        <div class="cmd" data-copy="/plugin install ucdavis-proteomics-core-pipeline@ucdavis-proteomics-core">
+          <button class="copy" type="button">Copy</button>
+          <div class="cmd-label">Step two &mdash; install</div>
+          <pre><code>/plugin install ucdavis-proteomics-core-pipeline@ucdavis-proteomics-core</code></pre>
+        </div>
+        <p>
+          Claude will ask you to confirm before trusting a new plugin source. Accept it, and
+          the skill is ready.
+        </p>
+      </div>
+
+      <div class="card">
+        <h3>In Claude Desktop</h3>
+        <p class="sub">The app, no terminal</p>
+        <p>Everything starts from the <strong>+</strong> button beside the prompt box:</p>
+        <ul class="plain">
+          <li>Click <strong>+</strong>, then choose <strong>Plugins</strong>.</li>
+          <li>Choose <strong>Add plugin</strong> to open the plugin browser.</li>
+          <li>Add the marketplace <code>bsphinney/DE-LIMP</code>.</li>
+          <li>Find <strong>ucdavis-proteomics-core-pipeline</strong> and click <strong>Install</strong>.</li>
+        </ul>
+        <p>
+          To check on it later, take the same route and choose <strong>Manage plugins</strong>. The
+          <strong>Customize</strong> item in the sidebar also reaches plugins, alongside skills and
+          connectors.
+        </p>
+      </div>
+    </div>
+
+    <h3>Confirming it's there, and keeping it current</h3>
+    <p>
+      In Claude Code, <code>/plugin list</code> shows what's installed. Running <code>/plugin</code>
+      on its own opens a browser with tabs for discovering plugins, managing the ones you have,
+      and viewing any errors. If the skill doesn't respond in the session where you installed it,
+      <code>/reload-plugins</code> activates it without restarting.
+    </p>
+    <p>
+      Updates arrive automatically unless you've turned that off. To pull the newest version
+      yourself:
+    </p>
+    <div class="cmd" data-copy="/plugin marketplace update ucdavis-proteomics-core">
+      <button class="copy" type="button">Copy</button>
+      <div class="cmd-label">Fetch the latest version</div>
+      <pre><code>/plugin marketplace update ucdavis-proteomics-core</code></pre>
+    </div>
+    <p>
+      Note the two different names: <code>bsphinney/DE-LIMP</code> is the GitHub repository you add,
+      while <code>ucdavis-proteomics-core</code> is the marketplace inside it that later commands
+      refer to.
+    </p>
+  </div>
+</section>
+
+<section id="first-run">
+  <div class="wrap">
+    <h2>Run your first analysis</h2>
+    <p class="lede">
+      There is no command to remember. Describe what you have, and the skill starts itself.
+    </p>
+
+    <div class="say">
+      <div class="cmd-label">Say something like</div>
+      <p>
+        &ldquo;Analyze my proteomics data in <code>~/data/HeLa_treated</code>. It's human &mdash; the
+        first three files are control and the last three are treated.&rdquo;
+      </p>
+    </div>
+
+    <p>Phrases that also start it: <em>search these raw files</em>, <em>find differentially expressed
+    proteins</em>, <em>process this timsTOF run</em>, or simply pointing at a folder and asking what's
+    in it. It will then work through the following with you.</p>
+
+    <ol class="steps">
+      <li>
+        <span class="num">1</span>
+        <div class="step-body">
+          <h3>It asks where you're running</h3>
+          <p>
+            Whether you have a UC Davis HIVE account, and whether you're in the Proteomics Core.
+            If you're neither &mdash; which is most people &mdash; say no to both and everything runs on
+            your own machine. HIVE is a shortcut for Core members, never a requirement.
+          </p>
+        </div>
+      </li>
+      <li>
+        <span class="num">2</span>
+        <div class="step-body">
+          <h3>It sets up its toolchain</h3>
+          <p>
+            On the first run only, it installs R, the statistics packages, and a search engine
+            into a single self-contained folder. This takes a few minutes and needs no admin
+            password. Later runs skip it in seconds.
+          </p>
+        </div>
+      </li>
+      <li>
+        <span class="num">3</span>
+        <div class="step-body">
+          <h3>It detects your data and confirms the plan</h3>
+          <p>
+            It reads the files to determine DIA or DDA and the instrument, matches a validated
+            workflow, and shows you what it intends to run. <strong>Nothing heavy starts without
+            your explicit go-ahead</strong> &mdash; a search can run for hours, so it always asks first.
+          </p>
+        </div>
+      </li>
+      <li>
+        <span class="num">4</span>
+        <div class="step-body">
+          <h3>It runs, watches itself, and fixes problems</h3>
+          <p>
+            Once the search is going it monitors progress and recovers on its own from the usual
+            failures &mdash; a job that runs out of memory, hits its time limit, or stalls on a bad
+            file. You don't need to babysit it. It reports what it recovered.
+          </p>
+        </div>
+      </li>
+      <li>
+        <span class="num">5</span>
+        <div class="step-body">
+          <h3>It checks the results before believing them</h3>
+          <p>
+            Before writing anything up it audits the design and the data: too few replicates,
+            a confounded batch, unusually low identification depth, or contamination that
+            could look like biology. Warnings are surfaced to you, and genuine problems stop
+            the analysis rather than producing a confident-looking wrong answer.
+          </p>
+        </div>
+      </li>
+      <li>
+        <span class="num">6</span>
+        <div class="step-body">
+          <h3>It writes everything up</h3>
+          <p>
+            Results land in a dated session folder next to your raw data (or anywhere else you
+            ask). Start with <code>README.md</code> inside it, then the analysis report.
+          </p>
+        </div>
+      </li>
+    </ol>
+  </div>
+</section>
+
+<section id="results">
+  <div class="wrap">
+    <h2>What you get back</h2>
+    <p class="lede">Everything from one run is collected in a single session folder, ready to share or archive.</p>
+    <div class="tw">
+      <table>
+        <thead>
+          <tr><th>File</th><th>What it is</th></tr>
+        </thead>
+        <tbody>
+          <tr><td><code>README.md</code></td><td>Start here &mdash; a plain summary of the run and where everything is.</td></tr>
+          <tr><td><code>AI_Analysis_Report.md</code><br><code>AI_Analysis_Report.docx</code></td><td>The written interpretation: what changed, in which comparison, and what it may mean. Figures embedded, in Markdown and Word.</td></tr>
+          <tr><td><code>tables/</code></td><td>One differential expression table per comparison, plus the full expression matrix, as CSV.</td></tr>
+          <tr><td><code>figures/</code></td><td>Volcano plots, PCA, heatmap of top proteins, p-value distributions, per-sample protein counts.</td></tr>
+          <tr><td><code>tables/methods.txt</code></td><td>A methods paragraph describing what was actually run. Paste it into a manuscript verbatim.</td></tr>
+          <tr><td><code>AUDIT.md</code><br><code>SAMPLE_QUALITY.md</code></td><td>Design and data-quality findings, including anything that should temper your conclusions.</td></tr>
+          <tr><td><code>OUTPUT_FILES.md</code></td><td>Every file produced, with a plain-language description of each.</td></tr>
+          <tr><td><code>reproducibility/</code></td><td>Exact versions, parameters, checksums, and a runnable <code>reproduce.sh</code> so the analysis can be re-derived later.</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+</section>
+
+<section id="platform">
+  <div class="wrap">
+    <h2>Notes for your platform</h2>
+    <p class="lede">Most people need none of this. Check only the row that matches you.</p>
+    <div class="tw">
+      <table>
+        <thead>
+          <tr><th>You're on</th><th>What to know</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><strong>Linux</strong></td>
+            <td>Everything installs and runs automatically. Nothing extra to do.</td>
+          </tr>
+          <tr>
+            <td><strong>macOS</strong></td>
+            <td>DDA data and all statistics work out of the box. For <em>DIA</em> data, DIA-NN has no Mac build, so the skill runs it in Docker &mdash; you'll be asked once to install <a href="https://docs.docker.com/desktop/setup/install/mac-install/">Docker Desktop</a> and open it. That is the only manual step anywhere in this pipeline.</td>
+          </tr>
+          <tr>
+            <td><strong>Windows</strong></td>
+            <td>Two routes. WSL2 (<code>wsl --install</code>) is smoothest &mdash; run the skill inside it and everything follows the Linux path. Native Windows also works, since the search engines ship Windows builds; run the skill from a POSIX shell such as Git Bash.</td>
+          </tr>
+          <tr>
+            <td><strong>UC Davis HIVE</strong></td>
+            <td>Tell the skill you have an account and where your SSH key is. It drives HIVE from your laptop and submits searches as SLURM jobs &mdash; never on a login node. Core members additionally reuse the software already installed in the group directory.</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="note">
+      <span class="tag">Check this if you're not at a university</span>
+      <p>
+        DIA-NN's free build is licensed for <strong>academic and non-profit use only</strong>. If you're
+        in a commercial setting, say so when asked and the skill will route your DIA data to
+        <strong>AlphaDIA</strong> (Apache-2.0) or <strong>Sage</strong> (MIT) instead. Both are free for
+        commercial use.
+      </p>
+    </div>
+  </div>
+</section>
+
+<section id="trouble">
+  <div class="wrap">
+    <h2>If something goes wrong</h2>
+    <p class="lede">
+      The short version: tell Claude what you're seeing, in plain words. It knows how to repair
+      its own environment. These are the few cases worth recognizing.
+    </p>
+    <div class="tw">
+      <table>
+        <thead>
+          <tr><th>What you see</th><th>What to do</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>The skill doesn't start when you describe your data</td>
+            <td>Confirm it's installed with <code>/plugin list</code> (or the plugins panel), and try <code>/reload-plugins</code>. If it is installed, name it directly: &ldquo;use the ucdavis-proteomics-core-pipeline skill on this folder&rdquo;.</td>
+          </tr>
+          <tr>
+            <td>Something about R, limpa, or a missing package</td>
+            <td>Ask Claude to re-run the setup step. Don't install R or Bioconductor by hand &mdash; the skill manages its own environment, and a system R won't be the one it uses.</td>
+          </tr>
+          <tr>
+            <td>&ldquo;Docker is missing&rdquo; on a Mac with DIA data</td>
+            <td>Install Docker Desktop, open it once so the whale icon settles in the menu bar, then tell Claude to continue.</td>
+          </tr>
+          <tr>
+            <td>It says no validated workflow exists for your organism</td>
+            <td>That's deliberate &mdash; it won't invent search parameters. Get in touch and a workflow can be added for your organism and instrument.</td>
+          </tr>
+          <tr>
+            <td>It stops and refuses to interpret your results</td>
+            <td>Read what it says carefully. It stops on designs it can't analyze honestly, such as a group with no replicate or contamination confounded with your comparison. This is the skill working, not failing.</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <h3>Turning it off or removing it</h3>
+    <p>
+      To switch the skill off without removing it, use
+      <code>/plugin disable ucdavis-proteomics-core-pipeline@ucdavis-proteomics-core</code>
+      (<code>enable</code> brings it back). To remove it entirely, uninstall from the same plugin
+      panel you installed it in.
+    </p>
+    <p>
+      To also remove the toolchain it installed, delete the folder
+      <code>~/.proteomics-pipeline/</code>. Nothing was installed system-wide, and your data and
+      results are untouched.
+    </p>
+  </div>
+</section>
+
+<section id="help">
+  <div class="wrap">
+    <h2>Questions</h2>
+    <p>
+      The skill's source, the validated workflows it draws on, and the issue tracker all live in
+      the DE-LIMP repository:
+      <a href="https://github.com/bsphinney/DE-LIMP">github.com/bsphinney/DE-LIMP</a>.
+      If something here is wrong or unclear, open an issue &mdash; that's the fastest way to get it
+      fixed for the next person.
+    </p>
+    <p>
+      UC Davis Proteomics Core users can also just email
+      <a href="mailto:bsphinney@ucdavis.edu">bsphinney@ucdavis.edu</a>.
+    </p>
+  </div>
+</section>
+
+</main>
+
+<footer>
+  <div class="wrap">
+    <p>
+      <strong>UC Davis Proteomics Core</strong> &mdash; part of the
+      <a href="https://github.com/bsphinney/DE-LIMP">DE-LIMP</a> project.
+      Searches run in DIA-NN or Sage; differential expression uses
+      <a href="https://bioconductor.org/packages/limpa/">limpa</a> and limma.
+      Every analysis ships with the provenance needed to reproduce it.
+    </p>
+  </div>
+</footer>
+
+<script>
+document.querySelectorAll(".cmd").forEach(function (block) {
+  var btn = block.querySelector(".copy");
+  if (!btn) return;
+  btn.addEventListener("click", function () {
+    var text = block.getAttribute("data-copy") || block.querySelector("code").textContent;
+    navigator.clipboard.writeText(text).then(function () {
+      btn.textContent = "Copied";
+      btn.classList.add("done");
+      setTimeout(function () { btn.textContent = "Copy"; btn.classList.remove("done"); }, 1800);
+    }).catch(function () {
+      btn.textContent = "Press ⌘C";
+    });
+  });
+});
+</script>
+
+</body>
+</html>
