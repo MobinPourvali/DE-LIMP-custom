@@ -51,6 +51,15 @@ the spine.
    and output checksums, and a runnable `reproduce.sh`. Pin the registry to the
    commit SHA returned by `fetch_workflows.py` — never describe a result without
    the bundle that lets someone re-derive it. (DE-LIMP architectural rules #1, #4.)
+6. **Assume nothing about the user's environment — this skill runs for anyone.** Most
+   users are **not** UC Davis Core and **not** on HIVE: they're on macOS, Windows
+   (**WSL2** recommended, but **native Windows works too** — the engines ship Windows
+   builds), or generic Linux. HIVE / `/quobyte/proteomics-grp` is a Core **fast-path,
+   never a requirement**. For **every** program you have the user run, give a **public
+   source** anyone can obtain (download URL / `pip`/install command) and a path that
+   works on *their* OS — never hardcode an internal `/quobyte/...` path without its
+   public fallback. → `references/search-engines.md` ("Public program sources") +
+   `references/install.md`.
 
 ## Audience: assume nothing is installed
 
@@ -313,12 +322,25 @@ bash scripts/watch_run.sh --log <search log>
 # SLURM on HIVE:
 bash scripts/watch_run.sh --slurm <jobid> --log <job log> --hive   # (HIVE_USER/HIVE_KEY set)
 ```
-It returns `{state, done, failed, error_class, fix}`. While `done` is false, keep
-polling (sleep ~60s between polls; for long SLURM jobs use a scheduled wake-up). **If
-`failed` is true, apply the `fix`** (raise `--mem`/`--time`, switch DIA-NN container,
-fix a path, move to a GPU node, etc. — see `references/watcher.md`) and **resubmit**,
-then watch again. Report progress and any auto-fixes to the user. Only proceed to DE
-once the run is `COMPLETED` and `report.parquet` exists. → detail: `references/watcher.md`.
+It returns `{state, done, failed, stalled, error_class, fix}`. While `done` is false,
+keep polling (sleep ~60s between polls; for long SLURM jobs use a scheduled wake-up).
+Pass `--log` so it can also catch **stalls** — a job stuck in `RUNNING` with its log
+frozen (a hung file; `sacct` will show RUNNING forever). **If `failed` OR `stalled` is
+true, apply the `fix` and resubmit AUTONOMOUSLY — do not wait for the user.** Starting
+the search needed confirmation (golden rule #1); recovering a run that's already in
+flight does not. Common auto-fixes (→ `references/watcher.md` playbook):
+- **stalled/hung file:** `scancel` that task, retry once on a fresh node; if it stalls
+  again, **drop that one file** and continue (step 4 of the parallel chain auto-skips a
+  file with no `.quant`); note the dropped file in **Data Quality Notes**.
+- **failed step in the 5-step chain:** resubmit from the earliest incomplete step,
+  **reusing completed `.quant` and `step1.predicted.speclib`** — never restart the whole
+  cohort; broken `afterok` after a killed task → resubmit steps 3→4→5 fresh.
+- OOM → raise `--mem`; timeout → raise `--time`; missing temp dir → `mkdir -p` first.
+
+**Every search — single-shot or parallel array — must run under this watch loop.** Stop
+and tell the user only after 2 failed auto-fixes of the same class (dropping 1 pathological
+file out of many is success, not a failure). Report what you recovered. Only proceed to DE
+once `COMPLETED` and `report.parquet` exists. → detail: `references/watcher.md`.
 
 ### 8. Differential expression
 ```
@@ -353,6 +375,34 @@ replicate, or a batch confounded with the biology) until they resolve it — don
 let a new user over-interpret a broken design. The findings also go into the
 report's "Audit & caveats" section. → detail: `references/audit.md`.
 
+Then run the **biological sample-quality** check (contamination that mimics biology —
+hemolysis, tissue cross-contamination, skin) — and **read `references/anomaly-checks.md`
+and walk its decision tree** (the judgment branches `audit_results.py` can't automate:
+intensity-distribution outliers, replicate/condition ID overlap, mass/RT/CCS shifts,
+p-value-distribution shape, largest-FC-in-low-abundance, log2FC>5 artefacts, PCA sample
+swaps, GSEA background; plus XL-MS / phospho / non-model branches):
+```
+python3 scripts/sample_quality.py --matrix ./de_results/Expression_Matrix.csv \
+    --conditions ./conditions.csv --report ./search_out/report.parquet --out SAMPLE_QUALITY.md
+```
+**If a contamination panel is confounded with a group, STOP** — DE may be contamination,
+not biology, and protein-level filtering will not fix it (→ `references/anomaly-checks.md`).
+**If the sample IS keratin** (nail/hair/wool/skin/feather), pass **`--keratin-sample`** to
+`sample_quality.py` **and** `audit_results.py` — keratin is the analyte there, not a
+contaminant, and must not be flagged.
+Flag every anomaly in the 5-part format (*what · where · why · likely cause · fix*); the
+report **always** gets a **Data Quality Notes** section, even if "nothing anomalous observed."
+
+### 8d. Conditional expert review (spawn only on triggers)
+Most analyses don't need a panel. If **any** trigger fires — a statistical claim goes to a
+collaborator; any `log2FC > 5` or `p < 1e-10`; a new organism/instrument/reagent; cross-tool
+discordance; or the user asks — spawn **three reviewers in parallel** (one message, three
+`Agent` calls; each gets the report + data paths + context): **proteomics**, **biology**
+("could contamination explain this?"), **statistics**. Consolidate their findings (dedupe,
+sort by severity) into a `## Expert Review Notes` section and surface every **critical**
+issue to the user before finalizing. Skip for format conversion / FASTA prep / exploratory
+looks with no formal report. → detail: `references/anomaly-checks.md`.
+
 ### 9. Analyze the data (you write the report)
 Generate the analysis brief (it lists the figures to embed), then **do the analysis
 yourself** — you are the consultant the brief addresses:
@@ -367,7 +417,10 @@ Then **read `ANALYSIS_PROMPT.md` and every data file + figure it lists, and writ
 complete `AI_Analysis_Report.md`** with ALL its OUTPUT sections (Overview, QC, Key
 Findings Per Comparison, Cross-Comparison Biomarkers, High-Confidence Biomarkers,
 Pathway/GSEA if present, Biological Interpretation, How This Analysis Works, Methods
-& Reproducibility) **plus an "Audit & caveats" section from `AUDIT.md`**. **Embed
+& Reproducibility) **plus an "Audit & caveats" section from `AUDIT.md`**, a **Data
+Quality Notes** section (the 5-part anomalies from steps 8c/8d + `SAMPLE_QUALITY.md`,
+even if "nothing anomalous observed"), and — if a review panel ran (8d) — an **Expert
+Review Notes** section. **Embed
 every figure** (`![caption](figures/<file>.png)`) with an expert interpretation of
 what it shows for THIS data. Compute significant proteins, up/down splits,
 cross-comparison overlaps, and lowest-CV proteins directly from the CSVs — cite

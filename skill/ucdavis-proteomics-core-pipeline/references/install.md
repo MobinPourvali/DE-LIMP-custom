@@ -64,6 +64,17 @@ is already in mzML never touches Docker at all.
 
 ## Windows
 
-Run inside **WSL2** (the DE-LIMP-recommended path) and follow the Linux flow — the
-conda env, Sage, and the DIA-NN Linux binary all work there. Native Windows is not
-a target for this skill.
+Two supported routes — pick per the user:
+
+1. **WSL2 (recommended, smoothest).** `wsl --install` (Ubuntu), then run the skill
+   inside it and follow the Linux flow — the conda env, the bash orchestration scripts,
+   Sage, and the DIA-NN Linux binary all work as-is.
+2. **Native Windows.** The engines themselves ship **native Windows builds** — DIA-NN
+   (Windows GUI + CLI, and it reads Thermo `.raw` natively, so the Linux-only `.NET 8`
+   step is not needed), Sage, FragPipe, and ProteoWizard/`msconvert` (originally a
+   Windows tool). Python + R + limpa run natively too. The skill's *orchestration
+   scripts are bash*, so run them from a POSIX shell — **Git Bash** or **MSYS2** — or
+   drive the engines directly per their Windows docs. Docker Desktop is a third route.
+
+Public download links for every program are in `references/search-engines.md`
+("Public program sources"), so a user on any OS can obtain them without HIVE access.

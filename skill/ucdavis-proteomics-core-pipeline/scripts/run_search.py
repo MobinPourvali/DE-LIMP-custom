@@ -11,6 +11,8 @@ Routing (PLAN.md §7b):
 Per engine:
   diann    <cmd> --cfg <bundle .cfg> --f <files> --fasta <fasta>
            --out report.parquet --threads N        (native contract, no adapter)
+           adds --dda for DDA acquisition (DIA-NN 2.6+); if inputs are Thermo .raw,
+           auto-provisions a .NET 8 runtime (ensure_dotnet8.sh) so 2.6 can read them
   sage     convert .d/.raw -> mzML if needed (msconvert), then
            <cmd> <bundle sage_config.json> -f <fasta> -o <out> --parquet
            --disable-telemetry-i-dont-want-to-improve-sage
@@ -58,20 +60,48 @@ def pick_engine(args, bundle):
 
 
 # ----------------------------------------------------------------- DIA-NN -----
-def run_diann(cmd, params, files, fasta, out, threads, sbatch):
+def dotnet_env_for(files):
+    """DIA-NN 2.6's NATIVE binary needs a .NET 8 runtime (>= 8.0.17) to read Thermo
+    .raw. If any input is .raw, resolve/install one via ensure_dotnet8.sh and return
+    a shell snippet ('export DOTNET_ROOT=...; export PATH=...;') to prepend to the
+    DIA-NN command (inline) or the sbatch (compute node reads the shared install).
+    Returns "" for mzML/.d-only inputs (no .NET needed). Runs the helper where
+    run_search.py runs -- i.e. on the HIVE login node in the hive_remote model."""
+    if not any(f.lower().endswith(".raw") for f in files):
+        return ""
+    helper = os.path.join(os.path.dirname(os.path.abspath(__file__)), "ensure_dotnet8.sh")
+    try:
+        root = subprocess.check_output(["bash", helper], text=True).strip().splitlines()[-1]
+    except Exception as e:
+        sys.stderr.write(
+            f"[run_diann] ensure_dotnet8.sh could not provide a .NET 8 runtime ({e}).\n"
+            "  DIA-NN 2.6 will not read .raw. Options: run ensure_dotnet8.sh on a login\n"
+            "  node (needs internet), or feed mzML instead of .raw.\n")
+        return ""
+    return (f"export DOTNET_ROOT={shlex.quote(root)}; "
+            f'export PATH={shlex.quote(root)}:"$PATH";')
+
+
+def run_diann(cmd, params, files, fasta, out, threads, sbatch, acquisition=""):
     os.makedirs(out, exist_ok=True)
     report = os.path.join(out, "report.parquet")
     f_args = " ".join(f"--f {shlex.quote(f)}" for f in files)
+    # DIA-NN 2.6 supports DDA via --dda (must NOT be used on DIA data). QuantUMS is
+    # auto-disabled on DDA; for DDA quant DIA-NN recommends extra MS1 filtering on
+    # Ms1.Global.Q.Value / Ms1.Global.Quality (see references/search-engines.md).
+    dda = " --dda" if (acquisition or "").upper() == "DDA" else ""
     full = (f"{cmd} --cfg {shlex.quote(params)} {f_args} "
             f"--fasta {shlex.quote(fasta)} --out {shlex.quote(report)} "
-            f"--threads {threads}")
+            f"--threads {threads}{dda}")
+    dnet = dotnet_env_for(files)          # .NET 8 for reading Thermo .raw, if needed
     if sbatch:
-        emit_sbatch(sbatch, full, out, threads, job="diann_search")
-        return {"engine": "diann", "report": report, "submitted": sbatch, "ran": False}
-    sh(full)
+        emit_sbatch(sbatch, full, out, threads, job="diann_search", preamble=dnet)
+        return {"engine": "diann", "report": report, "submitted": sbatch,
+                "ran": False, "dda": bool(dda), "raw_dotnet": bool(dnet)}
+    sh((dnet + " " if dnet else "") + full)
     if not os.path.exists(report):
         sys.exit(f"DIA-NN finished but {report} is missing.")
-    return {"engine": "diann", "report": report, "ran": True}
+    return {"engine": "diann", "report": report, "ran": True, "dda": bool(dda)}
 
 
 # --------------------------------------------------------------- AlphaDIA -----
@@ -306,10 +336,13 @@ def _find(root, names):
     return None
 
 
-def emit_sbatch(path, command, out, threads, job):
+def emit_sbatch(path, command, out, threads, job, preamble=""):
     """Emit a minimal SLURM script (login-node-safe). Orchestrator submits it.
-    Mirrors DE-LIMP queue policy: genome-center-grp/high, publicgrp/low fallback."""
-    script = f"""#!/bin/bash
+    Mirrors DE-LIMP queue policy: genome-center-grp/high, publicgrp/low fallback.
+    `preamble` runs before the command (e.g. the DOTNET_ROOT exports that let
+    DIA-NN 2.6 read Thermo .raw)."""
+    pre = (preamble + "\n") if preamble else ""
+    script = f"""#!/bin/bash -l
 #SBATCH --job-name={job}
 #SBATCH --output={os.path.join(out, job)}_%j.log
 #SBATCH --cpus-per-task={threads}
@@ -319,7 +352,7 @@ def emit_sbatch(path, command, out, threads, job):
 #SBATCH --qos=genome-center-grp-high-qos
 set -euo pipefail
 cd {shlex.quote(os.path.abspath(out))}
-{command}
+{pre}{command}
 """
     with open(path, "w") as fh:
         fh.write(script)
@@ -361,7 +394,8 @@ def main():
     print(f"[run_search] engine={engine}  files={len(files)}  threads={a.threads}  "
           f"{'(emit sbatch)' if a.sbatch else '(inline)'}")
     if engine == "diann":
-        res = run_diann(cmd, a.params, files, a.fasta, a.out, a.threads, a.sbatch)
+        res = run_diann(cmd, a.params, files, a.fasta, a.out, a.threads, a.sbatch,
+                        acquisition=bundle.get("acquisition", ""))
     elif engine == "alphadia":
         res = run_alphadia(cmd, a.params, files, a.fasta, a.out, a.threads, a.sbatch)
     elif engine == "sage":

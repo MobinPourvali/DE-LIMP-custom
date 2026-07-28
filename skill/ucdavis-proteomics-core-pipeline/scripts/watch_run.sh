@@ -1,9 +1,11 @@
 #!/usr/bin/env bash
 # =============================================================================
 # watch_run.sh  --  One poll of a running search: report its state, detect known
-# errors, and suggest the fix. The orchestrator MUST watch every search it starts:
-# loop this until the run finishes, and on failure apply the fix (and resubmit) —
-# never leave a multi-hour search unmonitored.
+# errors AND stalls, and suggest the fix. The orchestrator MUST watch every search it
+# starts: loop this until the run finishes, and on failure OR stall apply the fix and
+# resubmit AUTONOMOUSLY (no user prompt) — never leave a multi-hour search unmonitored.
+# Detects both hard failures (sacct state) and STALLS (job RUNNING but log frozen,
+# which sacct/squeue cannot see) — see --stall-min and references/watcher.md.
 #
 # Usage:
 #   watch_run.sh --log <logfile>                 # local run: the search log
@@ -14,11 +16,12 @@
 #   while not done: watch_run.sh ...; sleep 60; done   # then act on failed/fix
 # =============================================================================
 set -uo pipefail
-MODE="local"; JOB=""; LOG=""; HIVE=false
+MODE="local"; JOB=""; LOG=""; HIVE=false; STALL_MIN=15
 while [ $# -gt 0 ]; do case "$1" in
-  --slurm) MODE="slurm"; JOB="$2"; shift 2;;
-  --log)   LOG="$2"; shift 2;;
-  --hive)  HIVE=true; shift;;
+  --slurm)     MODE="slurm"; JOB="$2"; shift 2;;
+  --log)       LOG="$2"; shift 2;;
+  --hive)      HIVE=true; shift;;
+  --stall-min) STALL_MIN="$2"; shift 2;;   # RUNNING + log frozen this long ⇒ stalled
   *) shift;;
 esac; done
 HERE="$(cd "$(dirname "$0")" && pwd)"
@@ -29,11 +32,19 @@ if [ "$MODE" = "slurm" ] && [ -n "$JOB" ]; then
   st="$(run "sacct -j $JOB --noheader -o State 2>/dev/null | head -1 | tr -d ' '" 2>/dev/null)"
   [ -z "$st" ] && st="$(run "squeue -j $JOB -h -o %T 2>/dev/null" 2>/dev/null)"
   state="${st:-PENDING}"
+  reason="$(run "squeue -j $JOB -h -o %R 2>/dev/null" 2>/dev/null)"
   case "$state" in
     COMPLETED)                                   done=true;;
     FAILED|TIMEOUT|OUT_OF_MEMORY|NODE_FAIL)       done=true; failed=true;;
     CANCELLED*)                                   done=true; failed=true;;
   esac
+  # An upstream failure leaves a CHAINED job PENDING FOREVER with this reason. A naive
+  # "wait until the job leaves the queue" monitor hangs here indefinitely and never fires
+  # — so treat it as a terminal FAILURE that needs recovery. (This is exactly what silently
+  # ate the first nail semi-tryptic chain overnight.)
+  if printf '%s' "$reason" | grep -qiE "DependencyNeverSatisfied|launch failed"; then
+    done=true; failed=true; dep_failed=true
+  fi
 fi
 
 tail_txt=""
@@ -52,15 +63,33 @@ elif m "CUDA|no kernel image|cuDNN|device-side|GPU.*not";                       
 elif m "msconvert.*not found|requires mzML|no mzML";                                then err_class="sage_no_mzml";  fix="Sage needs mzML. Convert .d/.raw with msconvert first (Linux/HIVE), then re-run.";
 elif m "Disk quota exceeded|No space left";                                         then err_class="disk";          fix="Out of disk/quota. Free space or point --out elsewhere and resubmit.";
 elif m "No such file|cannot open|does not exist|not found.*(fasta|\\.d|\\.raw)";     then err_class="missing_input"; fix="An input path is wrong (fasta/raw). Re-check paths (Windows→WSL/HIVE translation) and resubmit.";
+elif [ "${dep_failed:-false}" = true ];                                              then err_class="dependency_failed"; fix="An UPSTREAM job in the chain failed, so this one is stuck PENDING with DependencyNeverSatisfied (it will NEVER run and never leave the queue). Find the failed step (sacct -j <arrayjob>), apply that step's fix, and resubmit the downstream steps reusing already-computed outputs (.quant, step1.predicted.speclib) — don't restart the whole chain.";
 elif $failed;                                                                        then err_class="unknown_failure"; fix="Read the full log; diagnose via references/watcher.md; fix and resubmit.";
 fi
 
-STATE="$state" DONE="$done" FAILED="$failed" JOB="$JOB" MODE="$MODE" \
+# STALL detection: job RUNNING but its log has not advanced in STALL_MIN minutes.
+# A hung file (e.g. a pathological DIA-NN run) keeps the job in RUNNING while the log
+# freezes — sacct/squeue will NOT flag it. This is the "NA41-class" failure.
+stalled=false
+if [ -z "$err_class" ] && [ -n "$LOG" ] && printf '%s' "$state" | grep -qiE "RUNNING|^R$"; then
+  now="$(run "date +%s" 2>/dev/null)"
+  mt="$(run "stat -c %Y $(printf %q "$LOG") 2>/dev/null" 2>/dev/null | tr -dc 0-9)"
+  if [ -n "$now" ] && [ -n "$mt" ]; then
+    age=$(( now - mt ))
+    if [ "$age" -ge $(( STALL_MIN * 60 )) ]; then
+      stalled=true; err_class="stalled"
+      fix="RUNNING but log frozen ${age}s (> ${STALL_MIN} min) — likely a hung file (pathological DIA-NN run). Auto-recover: scancel this task/job, retry it ONCE on a fresh node; if it stalls again, DROP that file and continue (the 5-step chain's step 4 auto-skips a file with no .quant), then resubmit downstream steps reusing the completed .quant. Log the dropped file in Data Quality Notes."
+    fi
+  fi
+fi
+
+STATE="$state" DONE="$done" FAILED="$failed" STALLED="$stalled" JOB="$JOB" MODE="$MODE" \
 ECLASS="$err_class" FIX="$fix" TAIL="$tail_txt" python3 - <<'PY'
 import os, json
 print(json.dumps({
     "mode": os.environ["MODE"], "job": os.environ["JOB"], "state": os.environ["STATE"],
     "done": os.environ["DONE"] == "true", "failed": os.environ["FAILED"] == "true",
+    "stalled": os.environ.get("STALLED") == "true",
     "error_class": os.environ["ECLASS"], "fix": os.environ["FIX"],
     "log_tail": os.environ["TAIL"][-1500:],
 }, indent=2))

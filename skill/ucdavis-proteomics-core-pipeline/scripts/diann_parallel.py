@@ -28,12 +28,32 @@ Usage:
       [--assembly-cpus 64] [--assembly-mem 128] [--assembly-time 12] \
       [--partition high] [--account genome-center-grp] [--max-simultaneous 20] [--no-norm]
 """
-import os, sys, glob, argparse
+import os, sys, glob, argparse, shlex, subprocess
 
-# flags that are step-specific or auto-determined — never carry them into every step
+# flags that are step-specific or auto-determined — never carry them into every step.
+# NOTE: --dda is intentionally NOT stripped — for DDA data put --dda in the --cfg and it
+# flows into every step (DIA-NN 2.6 searches DDA per file exactly as it does DIA).
 STRIP = ("--fasta-search", "--predictor", "--gen-spec-lib", "--matrices", "--reanalyse",
          "--rt-profiling", "--no-norm", "--xic", "--out-lib", "--lib", "--out", "--f",
          "--fasta", "--threads", "--temp")
+
+
+def dotnet_prefix(raws):
+    """If any input is Thermo .raw, the DIA-NN 2.6 native binary needs a .NET 8 runtime
+    (>= 8.0.17) on PATH to read it. Resolve/install via ensure_dotnet8.sh and return an
+    'export DOTNET_ROOT=...; export PATH=...; ' prefix to put in front of every DIA-NN
+    invocation (each array task/step runs it; the shared install is read on the node).
+    Returns "" for mzML/.d-only inputs. Run the generator on a login node (internet)."""
+    if not any(r.lower().endswith(".raw") for r in raws):
+        return ""
+    helper = os.path.join(os.path.dirname(os.path.abspath(__file__)), "ensure_dotnet8.sh")
+    try:
+        root = subprocess.check_output(["bash", helper], text=True).strip().splitlines()[-1]
+    except Exception as e:
+        sys.stderr.write(f"[diann_parallel] ensure_dotnet8.sh failed ({e}); DIA-NN may not "
+                         "read .raw. Provide mzML or install .NET 8 >= 8.0.17.\n")
+        return ""
+    return f'export DOTNET_ROOT={root}; export PATH={root}:"$PATH"; '
 
 
 def read_cfg_flags(cfg):
@@ -51,15 +71,17 @@ def read_cfg_flags(cfg):
     return " ".join(out)
 
 
-def header(name, cpus, mem_gb, hours, partition, account, array=None):
+def header(name, cpus, mem_gb, hours, partition, account, qos=None, array=None):
     h = ["#!/bin/bash -l",
          f"#SBATCH --job-name={name}",
          f"#SBATCH --cpus-per-task={cpus}",
          f"#SBATCH --mem={mem_gb}G",
          f"#SBATCH --time={hours}:00:00",
          f"#SBATCH --partition={partition}",
-         f"#SBATCH --account={account}",
-         f"#SBATCH -o {name}_%j.log", f"#SBATCH -e {name}_%j.log"]
+         f"#SBATCH --account={account}"]
+    if qos:
+        h.append(f"#SBATCH --qos={qos}")
+    h += [f"#SBATCH -o {name}_%j.log", f"#SBATCH -e {name}_%j.log"]
     if array:
         h.insert(2, f"#SBATCH --array={array}")
         h = [x.replace("_%j.log", "_%A_%a.log") for x in h]
@@ -69,7 +91,8 @@ def header(name, cpus, mem_gb, hours, partition, account, array=None):
 def main():
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--diann", required=True, help="DIA-NN command (native binary path, or 'apptainer exec --bind … <sif> /diann-*/diann-linux')")
-    ap.add_argument("--raw", nargs="+", required=True)
+    ap.add_argument("--raw", nargs="+", default=[], help="raw paths/globs (or use --raw-list)")
+    ap.add_argument("--raw-list", help="file with one raw path per line — handles spaces in paths")
     ap.add_argument("--fasta", required=True)
     ap.add_argument("--out", required=True)
     ap.add_argument("--cfg", help="diann.cfg with the search params (estimate_params.py output)")
@@ -82,22 +105,35 @@ def main():
     ap.add_argument("--libpred-cpus", type=int, default=16)
     ap.add_argument("--libpred-mem", type=int, default=64)
     ap.add_argument("--libpred-time", type=int, default=4)
+    ap.add_argument("--seed-lib", help="Skip step-1 prediction; use this existing library "
+                    "(e.g. an InfinDIA empirical .parquet/.speclib) as the first-pass seed. "
+                    "This is how you PARALLELIZE a semi-tryptic / non-specific / InfinDIA search: "
+                    "build the small empirical library once (InfinDIA --pre-search), then fan the "
+                    "per-file passes out across the cluster against it.")
+    ap.add_argument("--seed-dep", help="SLURM job id the first pass should wait for (afterok) — "
+                    "e.g. the InfinDIA lib-build job that produces --seed-lib.")
     ap.add_argument("--partition", default="high")
     ap.add_argument("--account", default="genome-center-grp")
+    ap.add_argument("--qos", default=None, help="SLURM QOS. Needed for publicgrp/low "
+                    "(publicgrp-low-qos); high/genome-center-grp uses its default.")
     ap.add_argument("--max-simultaneous", type=int, default=20)
     ap.add_argument("--no-norm", action="store_true")
     a = ap.parse_args()
 
     raws = []
+    if a.raw_list:
+        with open(a.raw_list) as fh:
+            raws.extend(line.strip() for line in fh if line.strip())
     for p in a.raw:
         raws.extend(sorted(glob.glob(p)) or [p])
     raws = [os.path.abspath(r.rstrip("/")) for r in raws]
     n = len(raws)
     if n < 2:
-        sys.exit("Parallel search needs >= 2 raw files; use the single-shot run_search.py for 1.")
+        sys.exit("Parallel search needs >= 2 raw files (pass --raw or --raw-list); "
+                 "use the single-shot run_search.py for 1.")
     out = os.path.abspath(a.out); os.makedirs(out, exist_ok=True)
     fasta = os.path.abspath(a.fasta)
-    DN = a.diann
+    DN = dotnet_prefix(raws) + a.diann     # .NET 8 export prefix when inputs are Thermo .raw
     flags = read_cfg_flags(a.cfg)
     D = out  # all DIA-NN intermediate/output lives here (real paths; native binary reads them directly)
     report = "no_norm_report.parquet" if a.no_norm else "report.parquet"
@@ -105,9 +141,10 @@ def main():
 
     # file list (1 raw path per line) — array tasks index into it
     open(os.path.join(out, "file_list.txt"), "w").write("\n".join(raws) + "\n")
-    all_f = " ".join(f"--f {r}" for r in raws)
+    all_f = " ".join(f"--f {shlex.quote(r)}" for r in raws)   # quote — data paths may contain spaces
     array = f"0-{n-1}%{a.max_simultaneous}"
-    predicted = f"{D}/step1.predicted.speclib"
+    seed = os.path.abspath(a.seed_lib) if a.seed_lib else None
+    predicted = seed if seed else f"{D}/step1.predicted.speclib"
     empirical = f"{D}/empirical.parquet"
 
     def write(name, body):
@@ -119,17 +156,19 @@ def main():
             'if [ -z "$FILE" ]; then echo "no file for task $SLURM_ARRAY_TASK_ID"; exit 1; fi\n'
             'echo "Processing: $FILE"\n')
 
-    # Step 1 — library prediction (single job)
-    s1 = write("step1_libpred.sbatch", "\n".join([
-        header("s1_libpred", a.libpred_cpus, a.libpred_mem, a.libpred_time, a.partition, a.account), "",
-        f'echo "Step 1/5 library prediction"; date',
-        f'{DN} --fasta {fasta} --fasta-search --predictor --gen-spec-lib \\',
-        f'  --out-lib {D}/step1.speclib --out {D}/step1_lib.parquet \\',
-        f'  --threads {a.libpred_cpus} {flags}']))
+    # Step 1 — library prediction (single job) — SKIPPED when --seed-lib is given
+    s1 = None
+    if not seed:
+        s1 = write("step1_libpred.sbatch", "\n".join([
+            header("s1_libpred", a.libpred_cpus, a.libpred_mem, a.libpred_time, a.partition, a.account, qos=a.qos), "",
+            f'echo "Step 1/5 library prediction"; date',
+            f'{DN} --fasta {fasta} --fasta-search --predictor --gen-spec-lib \\',
+            f'  --out-lib {D}/step1.speclib --out {D}/step1_lib.parquet \\',
+            f'  --threads {a.libpred_cpus} {flags}']))
 
     # Step 2 — first pass (array): predicted lib -> per-file .quant
     s2 = write("step2_firstpass.sbatch", "\n".join([
-        header("s2_firstpass", a.threads_per_file, a.mem_per_file, a.time_per_file, a.partition, a.account, array=array), "",
+        header("s2_firstpass", a.threads_per_file, a.mem_per_file, a.time_per_file, a.partition, a.account, qos=a.qos, array=array), "",
         f'echo "Step 2/5 first pass, task ${{SLURM_ARRAY_TASK_ID}} of {n}"; date', pick,
         f'{DN} --f "$FILE" --fasta {fasta} --lib {predicted} \\',
         f'  --temp {D}/quant_step2 --rt-profiling --gen-spec-lib --quant-ori-names \\',
@@ -137,7 +176,7 @@ def main():
 
     # Step 3 — empirical library assembly (single job, --use-quant)
     s3 = write("step3_assembly.sbatch", "\n".join([
-        header("s3_assembly", a.assembly_cpus, a.assembly_mem, a.assembly_time, a.partition, a.account), "",
+        header("s3_assembly", a.assembly_cpus, a.assembly_mem, a.assembly_time, a.partition, a.account, qos=a.qos), "",
         f'echo "Step 3/5 empirical library assembly"; date',
         f'cp -r {D}/quant_step2 {D}/quant_step2_orig 2>/dev/null || true   # backup for resume',
         f'{DN} {all_f} --fasta {fasta} --lib {predicted} --use-quant --quant-ori-names \\',
@@ -147,7 +186,7 @@ def main():
 
     # Step 4 — final pass (array): empirical lib -> per-file .quant
     s4 = write("step4_finalpass.sbatch", "\n".join([
-        header("s4_finalpass", a.threads_per_file, a.mem_per_file, a.time_per_file, a.partition, a.account, array=array), "",
+        header("s4_finalpass", a.threads_per_file, a.mem_per_file, a.time_per_file, a.partition, a.account, qos=a.qos, array=array), "",
         f'echo "Step 4/5 final pass, task ${{SLURM_ARRAY_TASK_ID}} of {n}"; date', pick,
         'QUANT="${FILE##*/}"; QUANT="${QUANT%.*}.quant"',
         f'if [ ! -f "{D}/quant_step2/$QUANT" ]; then echo "SKIP: no step-2 quant for $QUANT"; exit 0; fi',
@@ -157,28 +196,39 @@ def main():
 
     # Step 5 — cross-run report (single job, --use-quant --matrices)
     s5 = write("step5_report.sbatch", "\n".join([
-        header("s5_report", a.assembly_cpus, a.assembly_mem, a.assembly_time, a.partition, a.account), "",
+        header("s5_report", a.assembly_cpus, a.assembly_mem, a.assembly_time, a.partition, a.account, qos=a.qos), "",
         f'echo "Step 5/5 cross-run report"; date',
         f'{DN} {all_f} --fasta {fasta} --lib {empirical} --use-quant --quant-ori-names \\',
         f'  --temp {D}/quant_step4 --matrices --out {D}/{report} \\',
         f'  --threads {a.assembly_cpus} {norm} {flags}']))
 
-    # submit.sh — chain the 5 steps with afterok dependencies
-    submit = "\n".join([
-        "#!/bin/bash", "set -euo pipefail", f'cd "{out}"',
-        'jid1=$(sbatch --parsable %s)' % s1,
-        'jid2=$(sbatch --parsable --dependency=afterok:$jid1 %s)' % s2,
+    # submit.sh — chain the steps with afterok dependencies
+    sub_lines = ["#!/bin/bash", "set -euo pipefail", f'cd "{out}"',
+                 f'mkdir -p "{D}/quant_step2" "{D}/quant_step4"   # DIA-NN --temp dirs MUST pre-exist']
+    if seed:
+        # Step 1 skipped — the InfinDIA/empirical seed library IS the first-pass lib.
+        # First pass optionally waits (afterok) on the lib-build job that produces it.
+        dep2 = f'--dependency=afterok:{a.seed_dep} ' if a.seed_dep else ''
+        sub_lines += [
+            f'echo "Step 1/5 SKIPPED — seeding first pass with {predicted}"',
+            'jid2=$(sbatch --parsable %s%s)' % (dep2, s2)]
+    else:
+        sub_lines += [
+            'jid1=$(sbatch --parsable %s)' % s1,
+            'jid2=$(sbatch --parsable --dependency=afterok:$jid1 %s)' % s2]
+    sub_lines += [
         'jid3=$(sbatch --parsable --dependency=afterok:$jid2 %s)' % s3,
         'jid4=$(sbatch --parsable --dependency=afterok:$jid3 %s)' % s4,
         'jid5=$(sbatch --parsable --dependency=afterok:$jid4 %s)' % s5,
-        'echo "submitted: lib=$jid1 firstpass=$jid2 assembly=$jid3 finalpass=$jid4 report=$jid5"',
-        f'echo "final report will be {D}/{report}; watch with: watch_run.sh --slurm $jid5 --log {D}/s5_report_${{jid5}}.log"'])
-    write("submit.sh", submit)
+        'echo "submitted: firstpass=$jid2 assembly=$jid3 finalpass=$jid4 report=$jid5"',
+        f'echo "final report will be {D}/{report}; watch with: watch_run.sh --slurm $jid5 --log {D}/s5_report_${{jid5}}.log"']
+    write("submit.sh", "\n".join(sub_lines))
 
     import json
     print(json.dumps({
         "out": out, "n_files": n, "report": f"{D}/{report}",
-        "scripts": [s1, s2, s3, s4, s5, "submit.sh"],
+        "seeded": bool(seed), "seed_lib": predicted if seed else None,
+        "scripts": [x for x in [s1, s2, s3, s4, s5, "submit.sh"] if x],
         "submit": f"bash {out}/submit.sh   (or: hive_exec.sh 'bash {out}/submit.sh')",
         "report_jobid_var": "jid5",
         "note": "5-step DIA-NN parallel chain. Mass accuracy is fixed (manual) — ensure --cfg has --mass-acc/--mass-acc-ms1 set, not 0/auto. Watch the run with watch_run.sh. Then point run_de.R at the report.",
