@@ -246,13 +246,17 @@ derived from your data type, then limpa/limma DE, and writes a biological analys
 report plus a full reproducibility bundle, all packaged into tidy session folders.
 It runs in **Claude Code** and **Claude Desktop**.
 
-**Install (one time):**
+**Install (one time)** — in **Claude Code**:
 ```
 /plugin marketplace add bsphinney/DE-LIMP
-/plugin install ucdavis-proteomics-core-pipeline
+/plugin install ucdavis-proteomics-core-pipeline@ucdavis-proteomics-core
 ```
-On **Claude Desktop**: *Customize → Plugins → Browse plugins*, add the marketplace
-`bsphinney/DE-LIMP`, then install **ucdavis-proteomics-core-pipeline**.
+On **Claude Desktop**: click the **+** button beside the prompt box → *Plugins* →
+*Add plugin*, add the marketplace `bsphinney/DE-LIMP`, then install
+**ucdavis-proteomics-core-pipeline**.
+
+📖 **[Step-by-step install guide](https://bsphinney.github.io/DE-LIMP/skill-install.html)** —
+written for biologists, covers both apps, first run, platform notes, and troubleshooting.
 
 **Use it:** just say *"analyze my proteomics data in `~/data/HeLaQC` — it's human,
 first 3 are control, last 3 treated."* It asks only for what it can't detect
