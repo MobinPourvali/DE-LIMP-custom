@@ -82,6 +82,71 @@ def dotnet_env_for(files):
             f'export PATH={shlex.quote(root)}:"$PATH";')
 
 
+def slurm_available():
+    return shutil.which("sbatch") is not None
+
+
+def _diann_parallel_mod():
+    """Import the sibling generator so the parallel-safety rule has ONE definition."""
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    import diann_parallel
+    return diann_parallel
+
+
+def parallel_decision(engine, files, params, a):
+    """Should this DIA-NN run use the 5-step SLURM chain instead of one job?
+
+    Automatic above --parallel-threshold files (default 5, matching the facility's
+    DE-LIMP practice), but only where the chain is actually valid: it needs a cluster
+    and it needs pinned mass accuracy. When a precondition fails we fall back to the
+    single-shot search rather than erroring -- routing was our choice, not the user's.
+    Returns (use_parallel, reason)."""
+    n = len(files)
+    if engine != "diann":
+        return False, f"engine is {engine}; the chain is DIA-NN only"
+    if a.no_parallel:
+        return False, "--no-parallel was given"
+    if n <= a.parallel_threshold:
+        return False, f"{n} file(s), at or below the threshold of {a.parallel_threshold}"
+    if not slurm_available():
+        return False, (f"{n} files, but no SLURM here (sbatch not on PATH) -- the 5-step "
+                       "chain runs as job arrays, so a single search is the only option")
+    ma = _diann_parallel_mod().mass_acc_status(params)
+    if not ma["fixed"]:
+        return False, (f"{n} files, but mass accuracy is not pinned in {params} "
+                       f"({ma['reason']}); steps 3/5 reuse .quant files, so the chain needs "
+                       "fixed --mass-acc/--mass-acc-ms1. Re-run estimate_params.py with the "
+                       "real instrument to enable parallel")
+    return True, (f"{n} files > {a.parallel_threshold}, SLURM present, mass accuracy "
+                  f"{ma['reason']}")
+
+
+def run_diann_parallel(cmd, params, files, fasta, out, threads, a):
+    """Generate DIA-NN's 5-step SLURM chain (does not submit -- the orchestrator does,
+    then watches the step-5 job with watch_run.sh)."""
+    os.makedirs(out, exist_ok=True)
+    listing = os.path.join(out, "parallel_input_files.txt")
+    with open(listing, "w") as fh:                    # a list file survives spaces in paths
+        fh.write("\n".join(files) + "\n")
+    argv = [sys.executable,
+            os.path.join(os.path.dirname(os.path.abspath(__file__)), "diann_parallel.py"),
+            "--diann", cmd, "--raw-list", listing, "--fasta", fasta,
+            "--out", out, "--cfg", params, "--threads-per-file", str(threads)]
+    for flag, val in (("--partition", a.partition), ("--account", a.account),
+                      ("--qos", a.qos), ("--max-simultaneous", a.max_simultaneous)):
+        if val:
+            argv += [flag, str(val)]
+    res = subprocess.run(argv, capture_output=True, text=True)
+    if res.stderr:
+        sys.stderr.write(res.stderr)
+    if res.returncode != 0:
+        sys.exit(f"diann_parallel.py failed (exit {res.returncode}). "
+                 "Re-run with --no-parallel to fall back to a single search.")
+    info = json.loads(res.stdout)
+    info.update({"engine": "diann", "mode": "parallel_5step", "ran": False})
+    return info
+
+
 def run_diann(cmd, params, files, fasta, out, threads, sbatch, acquisition=""):
     os.makedirs(out, exist_ok=True)
     report = os.path.join(out, "report.parquet")
@@ -370,6 +435,15 @@ def main():
     ap.add_argument("--threads", type=int, default=8)
     ap.add_argument("--engine", choices=["diann", "alphadia", "sage", "fragpipe"])
     ap.add_argument("--sbatch", help="emit an sbatch script at this path instead of running inline")
+    ap.add_argument("--parallel-threshold", type=int, default=5,
+                    help="DIA-NN: use the 5-step SLURM chain above this many files (default 5)")
+    ap.add_argument("--no-parallel", action="store_true",
+                    help="force a single-shot DIA-NN search regardless of file count")
+    ap.add_argument("--partition", help="SLURM partition for the parallel chain")
+    ap.add_argument("--account", help="SLURM account for the parallel chain")
+    ap.add_argument("--qos", help="SLURM QOS for the parallel chain")
+    ap.add_argument("--max-simultaneous", type=int,
+                    help="cap concurrent array tasks in the parallel chain")
     ap.add_argument("--adapt-only", action="store_true",
                     help="skip the search; just build report.parquet from an existing engine output dir")
     a = ap.parse_args()
@@ -391,9 +465,15 @@ def main():
                  f"Re-run acquire_tools.sh, or check its notes:\n  "
                  + "\n  ".join(tools.get("notes", [])))
 
-    print(f"[run_search] engine={engine}  files={len(files)}  threads={a.threads}  "
-          f"{'(emit sbatch)' if a.sbatch else '(inline)'}")
+    use_parallel, why = parallel_decision(engine, files, a.params, a)
     if engine == "diann":
+        print(f"[run_search] parallel routing: {'YES' if use_parallel else 'no'} -- {why}")
+
+    print(f"[run_search] engine={engine}  files={len(files)}  threads={a.threads}  "
+          f"{'(5-step chain)' if use_parallel else '(emit sbatch)' if a.sbatch else '(inline)'}")
+    if use_parallel:
+        res = run_diann_parallel(cmd, a.params, files, a.fasta, a.out, a.threads, a)
+    elif engine == "diann":
         res = run_diann(cmd, a.params, files, a.fasta, a.out, a.threads, a.sbatch,
                         acquisition=bundle.get("acquisition", ""))
     elif engine == "alphadia":
@@ -414,6 +494,8 @@ def main():
             json.dump({"engine": engine, "version": version, "resolved_command": cmd,
                        "params_file": a.params, "fasta": a.fasta, "threads": a.threads,
                        "n_files": len(files), "files": files,
+                       "search_mode": "parallel_5step" if use_parallel else "single_shot",
+                       "parallel_routing_reason": why,
                        "submitted_sbatch": a.sbatch or None, "result": res}, fh, indent=2)
     except Exception as e:
         sys.stderr.write(f"[run_search] could not write search_provenance.json: {e}\n")
