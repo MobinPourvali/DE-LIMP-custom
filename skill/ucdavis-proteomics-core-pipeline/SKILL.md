@@ -346,7 +346,7 @@ python3 scripts/run_search.py --tools ~/.proteomics-pipeline/tools/tools.json \
   - FragPipe 24.0 bundles **DIA-NN 1.8.2_beta_8**, older than the 2.x the `diann_*`
     workflows pin. Expect different numbers from that alone; say so rather than
     attributing every difference to the spectrum-centric approach.
-  - Budget roughly **20 min per file for the diaTracer conversion alone** (paper: 34 files,
+  - **Four things block this route on a fresh account — read `references/fragpipe-diatracer.md`\n    BEFORE running it.** (1) the three engines are licence-gated and the tools folder must be the\n    one that also contains `speclib/`; (2) MSFragger needs a **target+decoy** FASTA, which DIA-NN\n    does not; (3) headless FragPipe rejects the spectral-library module until\n    `fragpipe-config.bin-python` exists in `~/.config/FragPipe/.../fragpipe-ui.cache` — no CLI flag\n    substitutes, run `scripts/fragpipe_bootstrap.py`; (4) diaTracer's standalone `main()` ignores its\n    own documented defaults and needs all seven numeric options passed.\n  - **On a cluster, parallelise the conversion automatically** with `scripts/diatracer_parallel.py`\n    — one SLURM task per file instead of FragPipe's serial loop. Measured 9 files in ~25 min vs ~3 h.\n    Re-stage afterwards so the manifest takes the reuse form and FragPipe skips conversion.\n  - Budget roughly **20 min per file for the diaTracer conversion alone** (paper: 34 files,
     32 cores, ~19.4 min each), before MSFragger and DIA-NN. The mzML are **reusable**, so a
     re-search with different parameters skips it. Needs Java 11+, MSFragger 4.4+,
     IonQuant 1.11.18+, diaTracer 2.2.1+. The three gated jars are **not** in the FragPipe
@@ -628,6 +628,37 @@ It writes `COMPARISON.md` + CSVs: protein-universe overlap, the 3×3 Up/Down/NS
 concordance per shared contrast, direction concordance on co-significant proteins,
 and logFC correlation. (`session.py finalize` already wrote `DIFFERENCES.md` —
 what *settings* changed; the Comparator shows how the *results* changed.)
+
+### 11c. Cross-tool comparison — report it, don't just compute it
+
+Comparing two search engines on the same raw files is a distinct deliverable from a DE
+re-analysis. `compare_searches.py` compares the SEARCHES (what each found, in how many
+runs, how reproducibly); `compare_analyses.R` compares the finished DE TABLES (which
+proteins actually change). Run both, then build the report:
+```
+python3 scripts/make_comparison_report.py --out <session>/output/comparison_report \
+  --search-comparison <dir from compare_searches.py> \
+  --de-comparison     <dir from compare_analyses.R> \
+  --qc "EngineA:<sessionA>/output/tables/QC_detected_vs_inferred.csv" \
+  --qc "EngineB:<sessionB>/output/tables/QC_detected_vs_inferred.csv" \
+  --instrument "<detected instrument>" --title "<A> vs <B>"
+python3 scripts/to_docx.py --in <...>/COMPARISON_REPORT.md --out <...>/COMPARISON_REPORT.docx
+```
+It emits an **interactive standalone HTML** (metric toggles, hover tooltips, a 3x3
+concordance matrix, sortable tables, theme-aware, no CDN) plus a markdown skeleton in
+the section order DE-LIMP's Run Comparator prompt defines — `docs/AI_PROMPTS.md` §1:
+Factual Observations, Sources of Disagreement, Case for A, Case for B, Settings Audit,
+Concordant Proteins, Synthesis, Follow-ups. **The generator writes every number; you
+write the judgement** — fill each `TODO(model)` block from the data and never invent a
+figure. Follow the prompt's guidelines: neither tool is inherently superior, every claim
+carries a number or a citation, speculation is labelled as such.
+
+**To compare engines fairly, run BOTH through the same DE method.** Push each engine's
+report through `run_de.R` with identical `--method`, contrasts and thresholds, so the
+search is the only variable. `run_de.R --format tsv` reads a FragPipe `report.tsv`
+directly. Also state any engine-VERSION gap out loud — FragPipe 24 bundles DIA-NN
+1.8.2 beta 8, two majors behind what the `diann_*` workflows pin, and that alone moves
+the numbers.
 
 ### 12. Finalize the session + report to the user
 ```
