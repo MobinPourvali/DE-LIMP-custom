@@ -88,3 +88,32 @@ any auto-fix you applied to the user.
 - **A job's SLURM State=COMPLETED does NOT mean the tool succeeded.** If the sbatch's last
   line is `echo ...` (exit 0), FragPipe/DIA-NN can crash yet the job shows COMPLETED. Verify
   the expected OUTPUT file exists (`report.parquet`, `combined_peptide.tsv`), not just the state.
+
+## Progress reporting (`--out`, `--poll`)
+
+`--out <search out dir>` makes the watcher report **real** progress instead of "still
+running". It counts what the 5-step chain leaves on disk — one `.quant` per finished file —
+and infers the stage from which artefacts exist:
+
+| Present in `--out` | Reported stage |
+|---|---|
+| nothing yet | step 1/5, library prediction |
+| `step1.predicted.speclib` | step 2/5, first pass — progress = `quant_step2/*.quant` ÷ `file_list.txt` |
+| all first-pass `.quant` present | step 3/5, empirical assembly |
+| `empirical.parquet` | step 4/5, final pass — progress = `quant_step4/*.quant` |
+| `report.parquet` | step 5/5, done |
+
+Emptiness counts as absent (`test -s`), so a zero-byte or truncated output is not mistaken
+for a finished step. All checks run through the same `run()` helper, so they work over SSH
+on HIVE exactly as locally. Without `--out` the watcher behaves as before.
+
+`--poll <n>` is a counter you increment each poll. It rotates the stage explanation's
+companion note (`pipeline_notes.py`) so a multi-hour search does not repeat itself; notes
+relevant to the current stage come first, then the rest of the list.
+
+**Relay `progress.summary` + `doing` to the user every poll**, and pass `note` along with
+its `note_source`. Silence during a multi-hour search reads as a hang. The note is general
+background — never present it as a finding about the user's data.
+
+Every fact in `pipeline_notes.py` carries a `source`. If you add one and cannot attribute
+it, do not add it.

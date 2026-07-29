@@ -328,10 +328,24 @@ python3 scripts/run_search.py --tools ~/.proteomics-pipeline/tools/tools.json \
 unmonitored.** Poll with `watch_run.sh` in a loop until it finishes:
 ```
 # local: python3 scripts/run_search.py ... run_in_background, then loop:
-bash scripts/watch_run.sh --log <search log>
+bash scripts/watch_run.sh --log <search log> --out <search out dir> --poll <n>
 # SLURM on HIVE:
-bash scripts/watch_run.sh --slurm <jobid> --log <job log> --hive   # (HIVE_USER/HIVE_KEY set)
+bash scripts/watch_run.sh --slurm <jobid> --log <job log> --out <out> --poll <n> --hive
 ```
+**Always pass `--out` and increment `--poll` each time.** `--out` is what turns "still
+running" into real progress: the chain drops a `.quant` per finished file, so the watcher
+reports the actual step and file count rather than guessing. `--poll` rotates the note.
+
+**Report progress to the user on every poll — a search is hours long and silence reads as
+a hang.** Give them one short line from `progress.summary` plus `doing`, and pass along
+`note` (with `note_source`) so there's something to read while waiting. For example:
+
+> Step 2 of 5 — searching each file against the predicted library. 34 of 66 files done
+> (52%). *While you wait: decoy sequences exist to be wrong on purpose. How often a search
+> prefers a decoy is what calibrates the false discovery rate. (Elias & Gygi 2007)*
+
+Keep it to a couple of lines; don't dump the JSON. Never present the note as a finding
+about **their** data — it is general background, and it must not be mistaken for a result.
 It returns `{state, done, failed, stalled, error_class, fix}`. While `done` is false,
 keep polling (sleep ~60s between polls; for long SLURM jobs use a scheduled wake-up).
 Pass `--log` so it can also catch **stalls** — a job stuck in `RUNNING` with its log

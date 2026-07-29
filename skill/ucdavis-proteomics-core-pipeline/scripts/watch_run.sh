@@ -16,12 +16,14 @@
 #   while not done: watch_run.sh ...; sleep 60; done   # then act on failed/fix
 # =============================================================================
 set -uo pipefail
-MODE="local"; JOB=""; LOG=""; HIVE=false; STALL_MIN=15
+MODE="local"; JOB=""; LOG=""; HIVE=false; STALL_MIN=15; OUTDIR=""; POLL=0
 while [ $# -gt 0 ]; do case "$1" in
   --slurm)     MODE="slurm"; JOB="$2"; shift 2;;
   --log)       LOG="$2"; shift 2;;
   --hive)      HIVE=true; shift;;
   --stall-min) STALL_MIN="$2"; shift 2;;   # RUNNING + log frozen this long ⇒ stalled
+  --out)       OUTDIR="$2"; shift 2;;      # search output dir ⇒ real progress + narration
+  --poll)      POLL="$2"; shift 2;;        # poll counter; rotates the note
   *) shift;;
 esac; done
 HERE="$(cd "$(dirname "$0")" && pwd)"
@@ -83,14 +85,60 @@ if [ -z "$err_class" ] && [ -n "$LOG" ] && printf '%s' "$state" | grep -qiE "RUN
   fi
 fi
 
+# ---- real progress ----------------------------------------------------------
+# Counted from what the 5-step chain actually leaves on disk, not guessed from the log:
+# every finished file drops a .quant, so "34 of 66" is a fact. Runs through run() so it
+# works over SSH on HIVE exactly as it does locally.
+stage="single"; n_total=0; n_done=0
+if [ -n "$OUTDIR" ]; then
+  q() { run "$*" 2>/dev/null | tr -dc 0-9; }
+  n_total="$(q "wc -l < $(printf %q "$OUTDIR/file_list.txt")")"
+  q2="$(q "ls -1 $(printf %q "$OUTDIR/quant_step2")/*.quant 2>/dev/null | wc -l")"
+  q4="$(q "ls -1 $(printf %q "$OUTDIR/quant_step4")/*.quant 2>/dev/null | wc -l")"
+  has() { [ "$(run "test -s $(printf %q "$1") && echo 1 || echo 0" 2>/dev/null | tr -dc 0-9)" = "1" ]; }
+  : "${n_total:=0}"; : "${q2:=0}"; : "${q4:=0}"
+  if [ "$n_total" -gt 0 ]; then                       # a 5-step chain lives here
+    if   has "$OUTDIR/report.parquet";     then stage="step5"; n_done="$n_total"
+    elif has "$OUTDIR/empirical.parquet";  then stage="step4"; n_done="$q4"
+    elif [ "$q2" -ge "$n_total" ];         then stage="step3"; n_done="$n_total"
+    elif has "$OUTDIR/step1.predicted.speclib"; then stage="step2"; n_done="$q2"
+    else stage="step1"; n_done=0
+    fi
+  fi
+fi
+
+# ---- narration: what this stage is doing, plus something to read while waiting
+notes="$(python3 "$HERE/pipeline_notes.py" --stage "$stage" --index "$POLL" 2>/dev/null)"
+
 STATE="$state" DONE="$done" FAILED="$failed" STALLED="$stalled" JOB="$JOB" MODE="$MODE" \
-ECLASS="$err_class" FIX="$fix" TAIL="$tail_txt" python3 - <<'PY'
+ECLASS="$err_class" FIX="$fix" TAIL="$tail_txt" \
+STAGE="$stage" NDONE="${n_done:-0}" NTOTAL="${n_total:-0}" NOTES="$notes" python3 - <<'PY'
 import os, json
-print(json.dumps({
+n_done, n_total = int(os.environ.get("NDONE") or 0), int(os.environ.get("NTOTAL") or 0)
+stage = os.environ.get("STAGE", "single")
+out = {
     "mode": os.environ["MODE"], "job": os.environ["JOB"], "state": os.environ["STATE"],
     "done": os.environ["DONE"] == "true", "failed": os.environ["FAILED"] == "true",
     "stalled": os.environ.get("STALLED") == "true",
     "error_class": os.environ["ECLASS"], "fix": os.environ["FIX"],
-    "log_tail": os.environ["TAIL"][-1500:],
-}, indent=2))
+}
+step_no = stage[4:] if stage.startswith("step") else None
+progress = {"stage": stage, "files_done": n_done, "files_total": n_total}
+if step_no:
+    progress["step"] = f"{step_no}/5"
+if n_total:
+    progress["percent"] = round(100.0 * n_done / n_total, 1)
+# One sentence the orchestrator can hand the user verbatim.
+where = f"step {step_no}/5" if step_no else "search"
+progress["summary"] = (f"{where}: {n_done}/{n_total} files done"
+                       + (f" ({progress['percent']:.0f}%)" if n_total else "")) \
+    if n_total else f"{where} running"
+out["progress"] = progress
+try:
+    out.update({k: v for k, v in json.loads(os.environ.get("NOTES") or "{}").items()
+                if k in ("doing", "why", "note", "note_source")})
+except Exception:
+    pass
+out["log_tail"] = os.environ["TAIL"][-1500:]
+print(json.dumps(out, indent=2))
 PY
