@@ -114,6 +114,35 @@ if (file.exists(em_path)) {
     add_fig(fn, "qc", "Proteins quantified per sample — a loading/QC check. Large differences between samples (or systematic differences between groups) flag uneven input or sample-quality problems.")
   }, error = function(e) message("[figures] QC counts failed: ", e$message))
 
+  # ---- detected vs inferred (the QC view that actually works after DPC) ----
+  # The plot above counts non-missing cells, but a DPC matrix is complete by
+  # construction, so every bar comes out identical and real depth differences
+  # are invisible. run_de.R writes QC_detected_vs_inferred.csv for this reason;
+  # plot it when present. Mirrors DE-LIMP's Data Completeness panel.
+  tryCatch({
+    qcf <- file.path(de_dir, "QC_detected_vs_inferred.csv")
+    if (file.exists(qcf)) {
+      q <- utils::read.csv(qcf, stringsAsFactors = FALSE, check.names = FALSE)
+      q <- q[order(q$Detected), ]
+      long <- rbind(
+        data.frame(Sample = q$Sample, n = q$Detected, Kind = "Detected"),
+        data.frame(Sample = q$Sample, n = q$Inferred, Kind = "Inferred"))
+      long$Sample <- factor(long$Sample, levels = q$Sample)
+      long$Kind   <- factor(long$Kind, levels = c("Detected", "Inferred"))
+      p2 <- ggplot2::ggplot(long, ggplot2::aes(n, Sample, fill = Kind)) +
+        ggplot2::geom_col(width = 0.72) +
+        ggplot2::scale_fill_manual(values = c(Detected = "#12866f", Inferred = "#e8a33d")) +
+        ggplot2::labs(title = "Detected vs inferred proteins per sample",
+                      subtitle = "Inferred values come from the DPC detection model, not measurement",
+                      x = "proteins", y = NULL, fill = NULL) +
+        ggplot2::theme_minimal(base_size = 11) +
+        ggplot2::theme(legend.position = "top")
+      fn2 <- file.path(outdir, "qc_detected_vs_inferred.png")
+      ggsave(fn2, p2, width = 9, height = max(3, 0.34 * nrow(q) + 1.6), dpi = 200)
+      add_fig(fn2, "qc", sprintf("Detected vs inferred proteins per sample (%.0f%%-%.0f%% detected). Detected means at least one precursor was actually observed in that run; inferred means the value came from the DPC detection-probability model. Samples with a large inferred fraction contribute weaker evidence, and fold-changes for proteins inferred in one whole group should be read as detection events rather than magnitudes.", min(q$PctDetected), max(q$PctDetected)))
+    }
+  }, error = function(e) message("[figures] detected/inferred QC failed: ", e$message))
+
   # complete-ish matrix for PCA/heatmap: keep proteins seen in all samples; if too
   # few, mean-impute per protein (PCA/heatmap need no NAs).
   complete <- M[rowSums(is.na(M)) == 0, , drop = FALSE]
