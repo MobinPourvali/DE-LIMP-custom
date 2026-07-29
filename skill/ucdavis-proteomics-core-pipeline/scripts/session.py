@@ -178,6 +178,22 @@ def do_init(a):
             for r in raws:
                 fh.write(os.path.abspath(r.rstrip("/")) + "\n")
 
+        # Symlink the raw files next to the results. A path in a text file is easy to
+        # lose track of; a directory you can open is not. These are links, not copies —
+        # the directory costs a few KB. finalize --zip skips it (see do_finalize), or a
+        # .d cohort would turn a 1.6 GB archive into 16 GB.
+        link_dir = os.path.join(p["output_dir"], "raw_data")
+        os.makedirs(link_dir, exist_ok=True)
+        for r in raws:
+            src = os.path.abspath(r.rstrip("/"))
+            dst = os.path.join(link_dir, os.path.basename(src))
+            try:
+                if os.path.islink(dst) or os.path.exists(dst):
+                    os.remove(dst) if os.path.islink(dst) else None
+                os.symlink(src, dst)
+            except OSError:
+                pass   # e.g. Windows without developer mode — the text list still has it
+
     # record the parent when this is a re-analysis
     parent = os.path.abspath(os.path.expanduser(a.reanalysis_of)) if a.reanalysis_of else None
     if parent:
@@ -283,10 +299,29 @@ def do_finalize(a):
         result["reanalysis_of"] = os.path.abspath(os.path.expanduser(parent))
 
     if a.zip:
-        archive = shutil.make_archive(p["session_dir"], "zip",
-                                      root_dir=os.path.dirname(p["session_dir"]),
-                                      base_dir=os.path.basename(p["session_dir"]))
+        # shutil.make_archive FOLLOWS symlinks, so output/raw_data (links to the raw
+        # cohort) would be dereferenced and inlined — turning a 1.6 GB archive into
+        # 16 GB for a 9-file .d study. Zip by hand and skip that one directory; the
+        # raw paths are still recorded in input/raw_files.txt.
+        import zipfile
+        sdir = p["session_dir"]
+        base = os.path.basename(sdir)
+        skip = os.path.join(sdir, "output", "raw_data")
+        archive = sdir + ".zip"
+        n_skipped = 0
+        with zipfile.ZipFile(archive, "w", zipfile.ZIP_DEFLATED) as z:
+            for root, dirs, files in os.walk(sdir):
+                if os.path.abspath(root) == os.path.abspath(skip):
+                    n_skipped = len(files) + len(dirs)
+                    dirs[:] = []
+                    continue
+                for fn in files:
+                    full = os.path.join(root, fn)
+                    if os.path.islink(full):
+                        continue
+                    z.write(full, os.path.join(base, os.path.relpath(full, sdir)))
         result["zip"] = archive
+        result["zip_excluded"] = {"output/raw_data (symlinks to raw files)": n_skipped}
 
     print(json.dumps(result, indent=2))
 
