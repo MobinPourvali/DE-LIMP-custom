@@ -71,6 +71,39 @@ def read_cfg_flags(cfg):
     return " ".join(out)
 
 
+def mass_acc_status(cfg):
+    """Is mass accuracy FIXED (manual) in this cfg? Steps 3/5 reuse the .quant files
+    from steps 2/4, so auto-calibration would be applied inconsistently between passes
+    (per DIA-NN dev guidance) -- the chain is only valid with pinned values. This is the
+    single definition of "is this cfg parallel-safe"; run_search.py imports it to decide
+    whether it may auto-route. Returns {fixed, ms2, ms1, reason}."""
+    vals = {"--mass-acc": None, "--mass-acc-ms1": None}
+    if cfg and os.path.exists(cfg):
+        try:
+            toks = shlex.split(open(cfg).read(), comments=True)
+        except ValueError:                      # unbalanced quotes -- fall back to raw split
+            toks = open(cfg).read().split()
+        for i, t in enumerate(toks):
+            if t in vals and i + 1 < len(toks):
+                try:
+                    vals[t] = float(toks[i + 1])
+                except ValueError:
+                    pass
+    ms2, ms1 = vals["--mass-acc"], vals["--mass-acc-ms1"]
+    pairs = (("--mass-acc", ms2), ("--mass-acc-ms1", ms1))
+    missing = [k for k, v in pairs if v is None]
+    auto = [k for k, v in pairs if v == 0]
+    if missing or auto:
+        why = []
+        if missing:
+            why.append("not set: " + ", ".join(missing))
+        if auto:
+            why.append("auto (0): " + ", ".join(auto))
+        return {"fixed": False, "ms2": ms2, "ms1": ms1, "reason": "; ".join(why)}
+    return {"fixed": True, "ms2": ms2, "ms1": ms1,
+            "reason": f"fixed (MS1 {ms1} ppm / MS2 {ms2} ppm)"}
+
+
 def header(name, cpus, mem_gb, hours, partition, account, qos=None, array=None):
     h = ["#!/bin/bash -l",
          f"#SBATCH --job-name={name}",
@@ -118,6 +151,9 @@ def main():
                     "(publicgrp-low-qos); high/genome-center-grp uses its default.")
     ap.add_argument("--max-simultaneous", type=int, default=20)
     ap.add_argument("--no-norm", action="store_true")
+    ap.add_argument("--allow-auto-mass-acc", action="store_true",
+                    help="proceed even though the cfg leaves mass accuracy on auto. Results "
+                         "across steps become inconsistent -- only for deliberate testing.")
     a = ap.parse_args()
 
     raws = []
@@ -135,6 +171,21 @@ def main():
     fasta = os.path.abspath(a.fasta)
     DN = dotnet_prefix(raws) + a.diann     # .NET 8 export prefix when inputs are Thermo .raw
     flags = read_cfg_flags(a.cfg)
+
+    # The chain is only valid with pinned mass accuracy (steps 3/5 reuse .quant files).
+    ma = mass_acc_status(a.cfg)
+    if not ma["fixed"] and not a.allow_auto_mass_acc:
+        sys.exit(
+            f"Mass accuracy is not fixed in {a.cfg or '(no --cfg given)'} -- {ma['reason']}.\n"
+            "The 5-step chain reuses .quant files across steps, so auto-calibration would be\n"
+            "applied inconsistently between passes and the cross-run report would be wrong.\n"
+            "Fix by re-running estimate_params.py with the real instrument so it pins the\n"
+            "DIA-NN recommended values (timsTOF 15/15, Astral 4/10, Orbitrap by resolution),\n"
+            "or run the single-shot search instead, which calibrates safely on its own.\n"
+            "To override deliberately: --allow-auto-mass-acc.")
+    if not ma["fixed"]:
+        sys.stderr.write(f"[diann_parallel] WARNING: proceeding with auto mass accuracy "
+                         f"({ma['reason']}) -- steps will not be mutually consistent.\n")
     D = out  # all DIA-NN intermediate/output lives here (real paths; native binary reads them directly)
     report = "no_norm_report.parquet" if a.no_norm else "report.parquet"
     norm = "--no-norm" if a.no_norm else ""
@@ -227,6 +278,7 @@ def main():
     import json
     print(json.dumps({
         "out": out, "n_files": n, "report": f"{D}/{report}",
+        "mass_acc": ma,
         "seeded": bool(seed), "seed_lib": predicted if seed else None,
         "scripts": [x for x in [s1, s2, s3, s4, s5, "submit.sh"] if x],
         "submit": f"bash {out}/submit.sh   (or: hive_exec.sh 'bash {out}/submit.sh')",

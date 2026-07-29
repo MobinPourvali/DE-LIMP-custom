@@ -16,8 +16,8 @@ name: "DIA-NN — Bruker timsTOF dia-PASEF (mouse)"
 description: >
   Library-free DIA-NN search of mouse dia-PASEF data acquired on a Bruker
   timsTOF, followed by the limpa DPC-Quant + limma differential expression
-  pipeline. For cohorts of roughly 8 or more files, run the 5-step parallel
-  SLURM chain (diann_parallel.py) rather than a single job.
+  pipeline. Cohorts of more than 5 files are routed to the 5-step parallel
+  SLURM chain automatically by run_search.py.
 
 match:
   acquisition: DIA
@@ -49,5 +49,5 @@ de:
   adjp: 0.05
 
 notes:
-  - "Use diann_parallel.py for >=8 files; mass accuracy must be FIXED (not auto) for the chain."
+  - "run_search.py auto-routes >5 files to the 5-step chain. The estimator's timsTOF 15/15 ppm satisfies the chain's fixed-mass-accuracy requirement, so parallel engages for this workflow."
   - "Report protein counts from report.stats.tsv, not from the post-DPC matrix (which is complete by construction)."
