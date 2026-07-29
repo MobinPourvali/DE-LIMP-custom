@@ -371,6 +371,17 @@ Produces publication-quality volcano (per contrast), PCA, heatmap of top protein
 p-value distributions, and a per-sample protein-count QC plot, plus `figures.json`
 (captions). These get embedded in the report.
 
+**Significance is `adj.P.Val` alone — there is no fold-change cutoff anywhere in this
+pipeline.** `--logfc` only positions a labelled reference line on the volcano. Never
+re-impose it when you count, rank, or describe significant proteins, and never justify a
+result by "it's ≥2-fold". The moderated t-test tested H0: log2FC = 0, so that is the only
+claim the FDR covers; filtering the list on the observed fold change afterwards would
+report a stronger claim than the error rate supports, because an observed fold change is
+a point estimate with no uncertainty attached. (Testing a fold-change threshold properly
+needs `limma::treat()`'s interval null — McCarthy & Smyth 2009 — not a post-hoc cut.) You
+may report how many significant proteins also exceed the reference line, as a description
+of effect size.
+
 ### 8c. Audit the results for common mistakes (surface every issue)
 ```
 python3 scripts/audit_results.py --out AUDIT.md --conditions ./conditions.csv \

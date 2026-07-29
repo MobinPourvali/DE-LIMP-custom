@@ -171,7 +171,7 @@ def audit_de(findings, de_dir, adjp, logfc):
     for f in sorted(glob.glob(os.path.join(de_dir, "DE_*.csv"))):
         rows = read_csv(f)
         ct = os.path.basename(f)
-        n = sig = 0
+        n = sig = beyond = 0
         for r in rows:
             try:
                 a = float(r.get("adj.P.Val", "nan")); l = float(r.get("logFC", "nan"))
@@ -180,21 +180,27 @@ def audit_de(findings, de_dir, adjp, logfc):
             if a != a:  # nan
                 continue
             n += 1
-            if a < adjp and abs(l) >= logfc:
+            # Significance is the adjusted p-value alone -- the same rule run_de.R and the
+            # figures use. |logFC| is only counted descriptively, for the report.
+            if a < adjp:
                 sig += 1
+                if abs(l) >= logfc:
+                    beyond += 1
         if n == 0:
             continue
         frac = sig / n
         if sig == 0:
             add(findings, "de_signal", "WARN",
-                f"{ct}: 0 proteins significant (adj.P<{adjp}, |logFC|≥{logfc}). The experiment may be "
+                f"{ct}: 0 proteins significant (adj.P<{adjp}). The experiment may be "
                 "underpowered, the effect small, or the groups mislabeled.")
         elif frac > 0.5:
             add(findings, "de_signal", "WARN",
                 f"{ct}: {sig}/{n} ({frac*100:.0f}%) proteins significant — implausibly high. This usually "
                 "means a batch effect, a normalization problem, or confounded/mislabeled groups, not real biology.")
         else:
-            add(findings, "de_signal", "PASS", f"{ct}: {sig}/{n} proteins significant ({frac*100:.0f}%).")
+            add(findings, "de_signal", "PASS",
+                f"{ct}: {sig}/{n} proteins significant at adj.P<{adjp} ({frac*100:.0f}%); "
+                f"{beyond} of those are also ≥{2**logfc:.3g}-fold.")
 
 
 def main():

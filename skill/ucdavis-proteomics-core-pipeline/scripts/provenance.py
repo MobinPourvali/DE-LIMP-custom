@@ -349,7 +349,8 @@ This bundle contains everything needed to reproduce the analysis.
 - id: `{wf_id}`
 - registry: {REGISTRY_LINE(reg)}
 - engine: {(wfman or {}).get('engine')}
-- DE: method=`{a.de_method}`, contrasts=`{a.contrasts}`, q≤{a.q_cutoff}, |logFC|≥{a.logfc}, adj.P<{a.adjp}
+- DE: method=`{a.de_method}`, contrasts=`{a.contrasts}`, q≤{a.q_cutoff}, adj.P<{a.adjp}
+  (significance is the BH adjusted p-value alone; |logFC|={a.logfc} is a volcano reference line, not a filter)
 - query: acquisition=`{a.acquisition}`, organism_taxid=`{a.organism_taxid}`, instrument=`{a.instrument}`
 
 ## How to reproduce

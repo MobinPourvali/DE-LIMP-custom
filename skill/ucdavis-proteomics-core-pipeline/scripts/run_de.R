@@ -57,7 +57,14 @@ q_cutoff  <- as.numeric(getarg("--q-cutoff", "0.01"))
 eq_cutoff <- as.numeric(getarg("--eq-cutoff", "0"))
 pgq_cutoff<- as.numeric(getarg("--pgq-cutoff", "0"))
 outdir    <- getarg("--outdir", "de_results")
-logfc_thr <- as.numeric(getarg("--logfc", "1.0"))
+# --logfc is a REFERENCE LINE ONLY -- it is drawn and labelled on the volcano and never
+# filters anything. Significance is the BH-adjusted p-value alone, which is the exact
+# hypothesis eBayes/topTable tested (true logFC != 0). Filtering that list on the
+# observed |logFC| afterwards would report a stronger claim ("changed by at least Nx")
+# than the error rate covers, since the observed fold change is a point estimate carrying
+# no uncertainty. Testing a fold-change threshold properly needs limma::treat()'s interval
+# null, not a post-hoc cut (McCarthy & Smyth 2009).
+logfc_ref <- as.numeric(getarg("--logfc", "1.0"))
 adjp_thr  <- as.numeric(getarg("--adjp", "0.05"))
 
 if (is.null(input) || is.null(meta_path))
@@ -200,10 +207,11 @@ for (cn in forms) {
   tt <- tt[order(tt$adj.P.Val), ]
   fn <- file.path(outdir, sprintf("DE_%s_%s.csv", method, make.names(cn)))
   utils::write.csv(tt, fn, row.names = FALSE)
-  sig <- subset(tt, !is.na(adj.P.Val) & adj.P.Val < adjp_thr & abs(logFC) >= logfc_thr)
+  sig <- subset(tt, !is.na(adj.P.Val) & adj.P.Val < adjp_thr)
   all_sig[[cn]] <- nrow(sig)
-  message(sprintf("[run_de] %-20s  %d proteins, %d significant (adj.P<%.2g, |logFC|>=%.2g) -> %s",
-                  cn, nrow(tt), nrow(sig), adjp_thr, logfc_thr, basename(fn)))
+  n_beyond <- sum(abs(sig$logFC) >= logfc_ref, na.rm = TRUE)   # descriptive, not a filter
+  message(sprintf("[run_de] %-20s  %d proteins, %d significant (adj.P<%.2g); %d of those with |logFC|>=%.2g -> %s",
+                  cn, nrow(tt), nrow(sig), adjp_thr, n_beyond, logfc_ref, basename(fn)))
 }
 
 # ---- methods + reproducibility provenance -----------------------------------
@@ -219,7 +227,10 @@ methods_txt <- c(
                           sprintf("Normalization : DPC-CN (applied within dpcCN before dpcQuant)"),
   sprintf("Design        : ~ 0 + %s", paste(formula_parts, collapse = " + ")),
   sprintf("Contrasts     : %s", paste(forms, collapse = ", ")),
-  sprintf("Thresholds    : adj.P.Val < %.3g and |logFC| >= %.3g", adjp_thr, logfc_thr),
+  sprintf("Significance  : adj.P.Val < %.3g (Benjamini-Hochberg), moderated t-test of", adjp_thr),
+  "                H0: log2 fold change = 0. No fold-change filter is applied --",
+  sprintf("                |log2FC| = %.3g is drawn on the volcano for reference only, so", logfc_ref),
+  "                the reported error rate matches the hypothesis actually tested.",
   "",
   sprintf("Citation      : %s", descriptor$citation)
 )
@@ -260,7 +271,8 @@ prov <- list(
   rollup_method = descriptor$rollup_method, de_engine = descriptor$de_engine,
   missing_policy = descriptor$missing_policy, citation = descriptor$citation,
   method = method, q_cutoff = q_cutoff, eq_cutoff = eq_cutoff, pgq_cutoff = pgq_cutoff,
-  logfc = logfc_thr, adjp = adjp_thr,
+  logfc = logfc_ref, logfc_role = "reference_line_only", adjp = adjp_thr,
+  significance_rule = "adj.P.Val < adjp (BH); no fold-change filter",
   design = paste0("~ 0 + ", paste(formula_parts, collapse = " + ")),
   contrasts = forms, n_samples = nrow(meta), groups = as.list(table(groups)),
   significant_per_contrast = all_sig,
@@ -322,7 +334,9 @@ if (method == "dpc" && exists("dat") && exists("y_protein")) {
       qc_stats     = list(detected_vs_inferred = qc_di),
       repro_log    = NULL,
       contrast     = paste(forms, collapse = ","),
-      logfc_cutoff = logfc_thr,
+      # Key name is DE-LIMP's session schema (server_de.R draws its volcano lines from
+      # it), so it stays -- but the value is our reference line, not a significance cut.
+      logfc_cutoff = logfc_ref,
       q_cutoff     = adjp_thr,
       saved_at     = Sys.time(),
       app_version  = "DE-LIMP v2.5"

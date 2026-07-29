@@ -14,6 +14,18 @@ Rscript scripts/run_de.R --input report.parquet --metadata conditions.csv \
 match the `Run` / column names in the report. Default contrasts = every group vs
 the first factor level.
 
+**`--logfc` is a reference line, not a filter.** Significance is `adj.P.Val < --adjp`
+(BH) and nothing else. `--logfc` is drawn and labelled on the volcano so a reader can see
+effect size, and it is reported descriptively ("N of the significant proteins are also
+≥2-fold"), but it never removes a protein from the significant set. This keeps the
+reported claim identical to the hypothesis `eBayes`/`topTable` actually tested
+(H0: log2FC = 0). A post-hoc `|logFC|` cut would assert "changed by at least Nx" while
+the FDR only covers "changed at all" — and because the observed fold change is a point
+estimate, proteins whose true effect is below the line pass it routinely. If a genuine
+fold-change threshold is ever wanted, use `limma::treat()` + `topTreat()`, whose interval
+null tests it properly; note that `treat` is far more stringent than the same cut applied
+post hoc, so limma recommends a *small* threshold there (fc 1.1–1.5, not 2).
+
 ## `--method dpc` (limpa DPC-Quant + limma) — DE-LIMP default, use with DIA-NN
 ```r
 dat <- limpa::readDIANN("report.parquet", format="parquet", q.cutoffs=0.01)

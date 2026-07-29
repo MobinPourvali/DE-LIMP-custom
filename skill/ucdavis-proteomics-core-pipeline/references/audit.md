@@ -36,6 +36,7 @@ matter most. It complements DE-LIMP's architectural rules (no fabricated values;
 pipeline self-describes) and its "Error handling & UX audit" review.
 
 ## Tuning
-`--adjp` / `--logfc` should match the DE thresholds; `--min-proteins` and
+`--adjp` should match the DE significance cutoff and `--logfc` the volcano's reference
+line (it is counted descriptively, never used to call significance); `--min-proteins` and
 `--max-missing` are soft thresholds — adjust for very small samples or enriched
 fractions (e.g. a phospho or secretome experiment legitimately quantifies fewer).
