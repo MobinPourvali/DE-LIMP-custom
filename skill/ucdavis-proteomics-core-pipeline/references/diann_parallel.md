@@ -2,8 +2,28 @@
 
 DIA-NN's high-throughput workflow — **poorly documented upstream**, so it is encoded
 here (`diann_parallel.py`), ported faithfully from DE-LIMP's `generate_parallel_scripts()`.
-Use it for **many DIA files on a cluster** (roughly ≥ ~8–10, or whenever a single
-job would be too slow). For a few files, the single-shot `run_search.py` is fine.
+
+## When it is used — automatic above 5 files
+
+`run_search.py` decides this for you; you rarely call `diann_parallel.py` by hand. It
+routes to the chain when **all** of these hold, and prints the reason either way:
+
+| Condition | Why it's required |
+|---|---|
+| engine is **DIA-NN** | the chain is DIA-NN-specific |
+| **more than 5 files** (`--parallel-threshold`, default 5) | below that, chain overhead (library prediction + two array round-trips) outweighs the win |
+| **SLURM present** (`sbatch` on PATH) | steps 2 and 4 are job arrays — there is no non-cluster equivalent |
+| **mass accuracy fixed** in the `--cfg` | steps 3/5 reuse the `.quant` files from 2/4; auto-calibration would differ between passes and corrupt the cross-run report |
+
+Any condition unmet → single-shot search, reason printed and written to
+`search_provenance.json` (`search_mode`, `parallel_routing_reason`). The fixable one is
+almost always mass accuracy: re-run `estimate_params.py` with the **real instrument** so
+it pins the DIA-NN recommended values, and parallel enables itself. Force the decision
+with `--no-parallel` or `--parallel-threshold N`.
+
+`diann_parallel.py` **refuses to run** on an auto/0 mass-accuracy cfg rather than
+producing a silently inconsistent report (`--allow-auto-mass-acc` overrides, for testing
+only).
 
 ## The 5 steps (chained with `afterok` dependencies)
 1. **Library prediction** — single job, no raw: predict a spectral library from the

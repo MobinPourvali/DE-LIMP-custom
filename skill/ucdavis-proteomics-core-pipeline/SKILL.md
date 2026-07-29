@@ -302,11 +302,21 @@ python3 scripts/run_search.py --tools ~/.proteomics-pipeline/tools/tools.json \
   DIA-NN's official recommended per-instrument mass tolerances (timsTOF → MS1/MS2 15
   ppm; Orbitrap Astral → 4/10 ppm; Orbitrap by resolution 240k→4, 120k→7, 60k→10,
   30k→15). Don't override these unless the user gives a validated SOP value.
-- **DIA-NN parallel (many DIA files on a cluster):** for ≳8–10 DIA files on HIVE, use
-  the **5-step parallel chain** instead of a single job — much faster (per-file passes
-  run as a SLURM array). Generate it with `diann_parallel.py` (pass the estimated
-  `--cfg`, which must have a **fixed** mass-acc — a known instrument), then submit
-  `submit.sh` over `hive_exec.sh`; it produces `report.parquet`. → `references/diann_parallel.md`.
+- **DIA-NN parallel — AUTOMATIC above 5 files.** `run_search.py` routes to the **5-step
+  parallel chain** by itself whenever the run is DIA-NN with **more than 5 files** on a
+  machine that has SLURM and a `--cfg` with **fixed** mass accuracy. You don't decide
+  this; it prints `parallel routing: YES|no -- <reason>` and records the reason in
+  `search_provenance.json`. This matches facility practice in DE-LIMP: per-file passes
+  run as a SLURM array instead of one long single-node job.
+  - It falls back to a single search, with the reason printed, when there's **no SLURM**
+    (the chain is job arrays — nothing to fall back to) or when **mass accuracy is on
+    auto**. Mass accuracy is the one you can fix: steps 3/5 reuse the `.quant` files, so
+    auto-calibration would differ between passes. Re-run `estimate_params.py` with the
+    **real instrument** (step 6b) to pin it and parallel turns itself on.
+  - Override either way with `--no-parallel` (force one job) or `--parallel-threshold N`.
+  - It **generates** the chain but does not submit it. Submit `<out>/submit.sh` (over
+    `hive_exec.sh` on HIVE), then watch the **step-5** job — that's the one that writes
+    `report.parquet`. → `references/diann_parallel.md`.
 - **On `hpc`:** add `--sbatch job.sh`, then `sbatch job.sh` (over `hive_exec.sh` for a
   remote HIVE run). Re-run with `--adapt-only` afterward for Sage/FragPipe/AlphaDIA to
   build `report.parquet`.
