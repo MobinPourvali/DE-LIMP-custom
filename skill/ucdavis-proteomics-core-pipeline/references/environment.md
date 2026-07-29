@@ -43,11 +43,33 @@ result from "latest" is not reproducible.
 ## FASTA resolution (`fetch_fasta.py`)
 
 ### `resolve` — organism → proteome (always run this; never guess a UPID)
-`fetch_fasta.py resolve --organism "mouse"` (or `--taxid 10090`) returns ranked
-`candidates` + `selected` + `needs_menu`. Reference proteomes rank first;
-UniProt's "Excluded" proteomes are dropped unless nothing else matches. Show the
-user `selected` and confirm. When `needs_menu` is true, present the menu — "mouse"
-also matches *Myotis myotis* and mouse-ear cress.
+`fetch_fasta.py resolve --organism "mouse"` returns ranked `candidates` +
+`selected` + `needs_menu` + `notes`. Accepts a common name, a scientific name, an
+NCBI taxid, or a `UP…` accession (`--taxid` also works). Show the user `selected`
+and confirm. When `needs_menu` is true, present the menu instead of auto-picking.
+
+`scripts/resolve_organism.py` is a thin alias for this same resolver, kept for
+older call sites. **One implementation** — don't add a third.
+
+How it picks, and why each rule exists:
+- **Curated table first.** 18 organisms a core facility actually sees map
+  name/alias → *taxid*, and the proteome is then resolved live from that taxid.
+  Free-text search answers some queries badly: "Escherichia coli K-12" returns
+  five Non-Reference MG1655 assemblies and never surfaces the real reference
+  `UP000000625` at all. Only the taxid is curated — a pinned `UP…` accession goes
+  stale (the dog reference moved from `UP000002254` to `UP000805418`), so the
+  table's accession is used only as an offline fallback and a staleness check,
+  which is reported in `notes`.
+- **Exact proteome-type match.** `"reference" in "Non Reference proteome"` is
+  True, so a substring test ranks strain assemblies as references.
+- **Strain qualifier stripped when name-matching.** `scientificName` is
+  `Saccharomyces cerevisiae (strain ATCC 204508 / S288c)`, so the bare species
+  name matched nothing and ranking fell through to protein count — which put
+  *S. pastorianus* first.
+- **"Excluded" proteomes dropped** unless nothing else matches.
+- **Auto-picks only when unambiguous**: one reference proteome the user actually
+  named. "mouse" also matches *Myotis myotis* and mouse-ear cress; "baker's yeast"
+  matches two S. cerevisiae strains → menu.
 
 Common IDs (still confirm with `resolve`): human `UP000005640`, mouse
 `UP000000589`, rat `UP000002494`, yeast `UP000002311`, E. coli `UP000000625`.

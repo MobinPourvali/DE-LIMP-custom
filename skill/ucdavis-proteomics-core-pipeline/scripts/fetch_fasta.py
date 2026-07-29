@@ -100,6 +100,36 @@ CONT_TAG = "Cont_"
 KINGDOM_DIR = {"eukaryota": "Eukaryota", "bacteria": "Bacteria",
                "archaea": "Archaea", "viruses": "Viruses"}
 
+# Curated organisms a core facility actually sees: taxid -> (name, offline UP, aliases).
+# We resolve the proteome LIVE from the taxid rather than trusting the accession --
+# reference proteomes get superseded, so a pinned UP silently goes stale, whereas an
+# NCBI taxid is stable. The accession is kept only as an offline fallback and as a
+# staleness cross-check. This table also fixes free-text searches that the proteomes
+# endpoint answers badly: "Escherichia coli K-12" returns five Non-Reference MG1655
+# assemblies and never surfaces the real reference UP000000625 at all.
+ORGANISM_TAXIDS = {
+    9606:  ("Homo sapiens",              "UP000005640", ["human", "hsapiens", "h. sapiens", "hs"]),
+    10090: ("Mus musculus",              "UP000000589", ["mouse", "mice", "murine", "mmusculus", "mm"]),
+    10116: ("Rattus norvegicus",         "UP000002494", ["rat", "rnorvegicus"]),
+    559292:("Saccharomyces cerevisiae",  "UP000002311", ["yeast", "s. cerevisiae", "scerevisiae",
+                                                         "budding yeast", "baker's yeast"]),
+    83333: ("Escherichia coli K-12",     "UP000000625", ["e. coli", "ecoli", "e coli",
+                                                         "escherichia coli", "escherichia coli k-12"]),
+    7227:  ("Drosophila melanogaster",   "UP000000803", ["fly", "fruit fly", "drosophila"]),
+    7955:  ("Danio rerio",               "UP000000437", ["zebrafish", "danio"]),
+    3702:  ("Arabidopsis thaliana",      "UP000006548", ["arabidopsis", "thale cress"]),
+    6239:  ("Caenorhabditis elegans",    "UP000001940", ["c. elegans", "celegans", "worm", "nematode"]),
+    9913:  ("Bos taurus",                "UP000009136", ["cow", "bovine", "cattle"]),
+    9823:  ("Sus scrofa",                "UP000008227", ["pig", "porcine", "swine"]),
+    9031:  ("Gallus gallus",             "UP000000539", ["chicken", "chick"]),
+    9615:  ("Canis lupus familiaris",    "UP000002254", ["dog", "canine"]),
+    9541:  ("Macaca fascicularis",       "UP000233100", ["cynomolgus", "cyno", "macaque"]),
+    284812:("Schizosaccharomyces pombe", "UP000002485", ["fission yeast", "s. pombe", "pombe"]),
+    5691:  ("Trypanosoma brucei",        "UP000008524", ["trypanosoma", "t. brucei"]),
+    1773:  ("Mycobacterium tuberculosis","UP000001584", ["mtb", "m. tuberculosis", "tb"]),
+    5833:  ("Plasmodium falciparum",     "UP000001450", ["plasmodium", "malaria", "p. falciparum"]),
+}
+
 CONTENT_TYPES = ("one_per_gene", "reviewed", "reviewed_isoforms",
                  "full", "full_isoforms")
 
@@ -218,14 +248,80 @@ def _strip_strain(s):
     return _norm(re.sub(r"\s*\([^)]*\)", " ", s or ""))
 
 
+def alias_taxid(text):
+    """Curated name/alias/taxid -> taxid. None if we don't recognise it."""
+    t = _norm(text)
+    if not t:
+        return None
+    if t.isdigit():
+        return int(t)
+    for tx, (name, _up, aliases) in ORGANISM_TAXIDS.items():
+        if t == _norm(name) or t in [_norm(x) for x in aliases]:
+            return tx
+    return None
+
+
 def cmd_resolve(a):
+    organism, taxid = a.organism, a.taxid
+    notes = []
+
+    # A UniProt accession typed straight in: take it at face value, but look it up so
+    # the user still gets shown the organism they are about to search.
+    if organism and re.fullmatch(r"UP\d{9}", organism.strip(), re.I):
+        upid = organism.strip().upper()
+        try:
+            m = proteome_meta(upid)
+        except Exception as e:
+            sys.exit(f"'{upid}' is not a resolvable UniProt proteome: {e}")
+        sel = {"proteome_id": upid, "organism": m["organism"], "common_name": "",
+               "taxid": m["taxid"], "protein_count": m["protein_count"],
+               "proteome_type": m["proteome_type"],
+               "is_reference": m["proteome_type"].strip().lower() == "reference proteome",
+               "exact_name_match": True}
+        print(json.dumps({"query": {"organism": organism}, "n_candidates": 1,
+                          "candidates": [sel], "selected": sel,
+                          "needs_menu": False,
+                          "notes": ["accession supplied verbatim"]}, indent=2))
+        return 0
+
+    # Curated alias -> taxid. Resolving BY TAXID is far more reliable than free text:
+    # the proteomes endpoint ranks strain assemblies above the species reference.
+    if organism and taxid is None:
+        tx = alias_taxid(organism)
+        if tx is not None:
+            taxid, notes = tx, [f"'{organism}' matched the curated organism table "
+                                f"(taxid {tx}); resolved by taxid, not free-text search"]
+
     try:
-        cands = resolve_proteomes(a.organism, a.taxid, a.size)
+        cands = resolve_proteomes(None if taxid else organism, taxid, a.size)
     except (urllib.error.URLError, urllib.error.HTTPError) as e:
+        # Offline fallback: the curated accession is better than nothing, but flag it —
+        # reference proteomes are superseded over time.
+        tx = taxid if taxid is not None else alias_taxid(organism or "")
+        if tx in ORGANISM_TAXIDS:
+            name, up, _ = ORGANISM_TAXIDS[tx]
+            sel = {"proteome_id": up, "organism": name, "common_name": "", "taxid": tx,
+                   "protein_count": 0, "proteome_type": "", "is_reference": True,
+                   "exact_name_match": True}
+            print(json.dumps({"query": {"organism": organism, "taxid": taxid},
+                              "n_candidates": 1, "candidates": [sel], "selected": sel,
+                              "needs_menu": True,
+                              "notes": [f"UniProt unreachable ({e}); resolved from the "
+                                        f"built-in fallback table. Reference proteome "
+                                        f"accessions change over time — VERIFY before "
+                                        f"relying on this."]}, indent=2))
+            return 0
         sys.exit(f"UniProt proteome search failed: {e}")
+
+    # Staleness cross-check against the curated table (same idea as the offline note).
+    tx = taxid if taxid is not None else None
+    if cands and tx in ORGANISM_TAXIDS and cands[0]["proteome_id"] != ORGANISM_TAXIDS[tx][1]:
+        notes.append(f"curated table lists {ORGANISM_TAXIDS[tx][1]} for taxid {tx}; "
+                     f"UniProt currently returns {cands[0]['proteome_id']}. Using UniProt.")
 
     out = {
         "query": {"organism": a.organism, "taxid": a.taxid},
+        "notes": notes,
         "n_candidates": len(cands),
         "candidates": cands[: a.size],
         "selected": cands[0] if cands else None,
@@ -233,10 +329,13 @@ def cmd_resolve(a):
         # proteome whose name the user actually named (or, for a taxid lookup,
         # exactly one reference proteome at all). Anything else -> show the menu.
         # "baker's yeast" stays a menu: two S. cerevisiae strains match exactly.
+        # Branch on how we actually resolved, not on whether --organism was typed:
+        # an alias that mapped to a taxid took the taxid path, where the exact-name
+        # flags are all False and counting them would force a needless menu.
         "needs_menu": (not cands or not cands[0]["is_reference"] or (
-            sum(1 for c in cands if c["exact_name_match"] and c["is_reference"]) != 1
-            if a.organism else
-            sum(1 for c in cands if c["is_reference"]) != 1)),
+            sum(1 for c in cands if c["is_reference"]) != 1
+            if taxid is not None else
+            sum(1 for c in cands if c["exact_name_match"] and c["is_reference"]) != 1)),
     }
     if not cands:
         out["hint"] = ("No proteome matched. Try the scientific name "
@@ -574,8 +673,12 @@ def main():
     sub = ap.add_subparsers(dest="cmd", required=True)
 
     r = sub.add_parser("resolve", help="organism name or taxid -> proteome candidates")
-    r.add_argument("--organism", help="common or scientific name, e.g. 'mouse'")
+    r.add_argument("--organism", help="common name, scientific name, NCBI taxid, or a "
+                                      "UP accession — e.g. 'mouse', 'Mus musculus', "
+                                      "10090, UP000000589")
     r.add_argument("--taxid", type=int, help="NCBI taxid, e.g. 10090")
+    r.add_argument("--list", action="store_true",
+                   help="print the curated organism table and exit")
     r.add_argument("--size", type=int, default=25)
 
     f = sub.add_parser("fetch", help="build the search FASTA")
@@ -604,8 +707,13 @@ def main():
         a.contaminants = "universal" if a.add_contaminants else "none"
 
     if a.cmd == "resolve":
+        if a.list:
+            print(json.dumps([{"taxid": tx, "organism": n, "offline_fallback_proteome": up,
+                               "aliases": al}
+                              for tx, (n, up, al) in sorted(ORGANISM_TAXIDS.items())], indent=2))
+            return 0
         if not (a.organism or a.taxid):
-            ap.error("resolve needs --organism or --taxid")
+            ap.error("resolve needs --organism or --taxid (or --list)")
         return cmd_resolve(a)
     return cmd_fetch(a)
 
