@@ -10,6 +10,11 @@ if (!exists("%||%")) `%||%` <- function(x, y) if (is.null(x)) y else x
 # Load helpers.R (cal_z_score, detect_organism_db)
 source(file.path(project_root, "R", "helpers.R"))
 
+# Load helpers_site.R (delimp_site) — helpers_search.R calls it from
+# translate_storage_path() and activity_log_path(), so it must be loaded FIRST or
+# every test touching those paths dies with "could not find function delimp_site".
+source(file.path(project_root, "R", "helpers_site.R"))
+
 # Load helpers_search.R (build_diann_flags, parse_sbatch_output, etc.)
 source(file.path(project_root, "R", "helpers_search.R"))
 
