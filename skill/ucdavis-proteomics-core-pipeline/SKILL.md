@@ -42,8 +42,12 @@ the spine.
    submitting jobs, `squeue`/`sacct` polling (`watch_run.sh`), and small file moves.
    If you're unsure whether a step is heavy, submit it as a job. (No SLURM but a big
    dataset locally? Warn the user it may be slow rather than hammering a shared host.)
-4. **Organism is a hard filter** (it defines the FASTA). Instrument is only a
-   tiebreaker. Acquisition is auto-detected and confirmed.
+4. **Organism is a hard filter** (it defines the FASTA) and is **always asked, never
+   assumed** — not from a workflow bundle, not from a folder name, not "probably
+   human". Resolve it with `fetch_fasta.py resolve` and have the user confirm the
+   proteome. Instrument is only a tiebreaker. Acquisition is auto-detected and
+   confirmed. If no validated workflow covers their organism, proceed unvalidated
+   with estimated params — never swap in another species' bundle.
 5. **Every run must be completely reproducible.** This is not optional. As you go,
    append every command you run (verbatim, with all arguments) to a `commands.log`.
    At the end you MUST produce a reproducibility bundle (step 9) that captures the
@@ -182,8 +186,49 @@ Returns per-file `acquisition` (DIA/DDA/unknown) + `confidence`, plus an overall
 → detail: `references/search-engines.md`.
 
 ### 3. Ask organism + experimental design (auto-map conditions)
-- **Organism** cannot be detected — ask, and resolve to a UniProt **taxid**
-  (human = 9606). This is required and authoritative.
+- **Organism** cannot be detected — you MUST ask the user, every run. **Never** take
+  it from a workflow bundle, a previous session, the folder name, or an assumption
+  that it's human. The bundle's `fasta.uniprot_proteome` is a *default to confirm*,
+  never an answer. Getting this wrong silently searches the wrong species and every
+  downstream number is void. Resolve their answer — don't guess the proteome ID:
+```
+python3 scripts/fetch_fasta.py resolve --organism "<what they said>"   # or --taxid <n>
+```
+  Accepts a common name, a scientific name, an NCBI taxid, or a `UP…` accession.
+  (`scripts/resolve_organism.py --organism …` is a thin alias for the same resolver,
+  kept for older call sites — there is only one implementation.)
+  Show the user `selected` (organism, proteome ID, protein count) and **confirm it**.
+  If `needs_menu` is true, present `candidates` as a menu instead of auto-picking —
+  it fires when the top hit isn't a clear reference proteome or several compete
+  (e.g. "mouse" also matches *Myotis myotis* and mouse-ear cress). Carry the
+  confirmed `taxid` into step 4 and the `proteome_id` into step 6.
+- **Database type** — ask what kind of protein database they want. Don't just
+  take a one-word answer if they sound unsure: **most users don't know, and that's
+  expected.** Explain the trade-off in their terms and recommend — every extra
+  sequence enlarges the search space, which costs sensitivity through FDR
+  correction, so bigger is not better:
+  - `one_per_gene` — **the default; recommend this.** One canonical protein per
+    gene (human ≈ 20.6k). Right for essentially all standard expression /
+    differential-abundance work, which is what almost everyone is doing.
+  - `reviewed` — Swiss-Prot only (manually curated). Use for organisms where the
+    reference proteome is padded with unreviewed predictions.
+  - `full` — every entry incl. unreviewed TrEMBL (human ≈ 147.5k, **7× bigger**).
+    Only for poorly-annotated organisms where curation is thin.
+  - `*_isoforms` variants — add splice isoforms. Only if the biological question
+    is *about* isoforms. Isoforms share most peptides, so they mostly add
+    ambiguous protein groups rather than answers.
+
+  If they don't know, ask what they're trying to find out (standard "which
+  proteins changed between my groups?" → `one_per_gene`), then say which you're
+  using and why. Don't make them learn UniProt vocabulary to answer.
+- **Contaminants** — ask which set to append (they are all `Cont_`-tagged, so
+  DIA-NN's `--cont-quant-exclude Cont_` keeps them out of quant either way):
+  - `universal` — **default**, and what the UC Davis Core stages on HIVE. Use it
+    unless the user has a reason not to.
+  - sample-type matched: `cell_culture`, `mouse_tissue`, `rat_tissue`,
+    `neuron_culture`, `stem_cell_culture` — offer these if the sample type is known.
+  - `none` — only if the user explicitly declines. Record it; the contaminant
+    anomaly check in step 10 is meaningless without contaminants in the database.
 - **Conditions:** ask the user to either *tell you* the conditions in plain words
   ("the first three are control, the rest treated") **or** *upload a file* (any
   CSV/TSV with a sample column and a group column, however named). Don't make them
@@ -252,9 +297,21 @@ Hard-filters on acquisition+taxid, scores instrument, returns `selected` +
 `candidates` + `needs_menu`. **Present `selected` to the user** — name, engine +
 pinned version, FASTA, DE method, and the `validated` provenance — and get
 confirmation. If `needs_menu` is true (no match / tie / no instrument info),
-present `candidates` as a menu instead of auto-proceeding. If zero candidates,
-tell the user no validated workflow exists for this acquisition+organism and stop
-(offer to add one to the registry — see `workflows/README.md`).
+present `candidates` as a menu instead of auto-proceeding.
+
+**If zero candidates** (the registry only covers a few organisms — anything else
+lands here), say so plainly and offer to continue **unvalidated**: run the same
+acquisition+instrument engine choice with `estimate_params.py` (step 6b), against
+the organism's own FASTA. Search parameters key on instrument and acquisition, not
+species, so this is sound — it just isn't Core-validated. If they continue, set
+`workflow_id: null` + `validated: false` everywhere it's recorded (session,
+provenance, report, methods) and say so in the report. Offer to add the workflow to
+the registry afterwards — see `workflows/README.md`.
+
+⚠ **Never substitute a bundle from a different organism.** A human bundle carries
+`fasta.uniprot_proteome: UP000005640`; reusing it for a rat sample searches rat data
+against the human proteome and silently voids the whole run. Bundles supply engine +
+parameters; **the organism always comes from step 3.**
 
 **Record the `registry.commit` SHA from the match output** — it pins the exact
 validated-params version for reproducibility. On confirm, pull the bundle's params
@@ -275,13 +332,32 @@ Reads/writes `~/.proteomics-pipeline/tools/tools.json`. On HIVE it reuses the
 existing `.sif`; on mac it uses Docker for DIA-NN. **Read `tools.json` `notes`** —
 license gates (FragPipe) and missing-runtime warnings surface there.
 
-### 6. Resolve the FASTA
+### 6. Build the FASTA
+Use the proteome, database type, and contaminant set the **user confirmed in
+step 3** — not the bundle's defaults:
 ```
-python3 scripts/fetch_fasta.py --proteome UP000005640 --add-contaminants \
+python3 scripts/fetch_fasta.py fetch --proteome <confirmed UPID> \
+    --content <one_per_gene|reviewed|reviewed_isoforms|full|full_isoforms> \
+    --contaminants <universal|cell_culture|...|none> \
     --out ./search.fasta [--hive]
 ```
+Defaults are `--content one_per_gene` (the canonical set, from UniProt's
+reference-proteome FTP tree) and `--contaminants universal`. **Do not pass
+`--content full` casually** — for human that is 147,506 sequences instead of
+20,652, a 7× larger search space. UniProt's REST `onePerGene` parameter is
+silently ignored, which is why the canonical set must come from FTP.
+
 Pass `--hive` when `uc_davis_hive` is true to reuse pre-staged proteomes +
 contaminants under `/quobyte/proteomics-grp/MRS/` instead of downloading.
+
+**Read the returned JSON** (also written to `<out>.meta.json` for the repro
+bundle) and act on it:
+- `warnings` non-empty → tell the user before searching; a one-per-gene→full
+  fallback changes the database out from under them.
+- `diann_cont_quant_exclude` → pass as `--cont-quant-exclude Cont_` to DIA-NN in
+  step 7 so contaminants are identified but excluded from quant + normalisation.
+- Contaminants that can't be fetched are a **hard stop**, not a warning. Fix the
+  source or have the user explicitly choose `--contaminants none`.
 → detail: `references/environment.md` ("FASTA").
 
 ### 6b. Estimate search parameters from the data type
@@ -292,8 +368,14 @@ Otherwise (the default — `estimate_params: true`), generate them:
 python3 scripts/estimate_params.py --engine <diann|sage> \
     --acquisition <DIA|DDA> --instrument "<detected instrument>" \
     --var-mods "<bundle var_mods>" --overrides '<bundle param_overrides as JSON>' \
+    --fasta-meta ./search.fasta.meta.json \
     --out ./wf/params.<cfg|json>
 ```
+Always pass `--fasta-meta` (step 6's sidecar): it carries the contaminant tag, so
+the cfg gets `--cont-quant-exclude Cont_` and contaminants are identified but kept
+out of quantification and normalisation. Both the single and 5-step parallel
+DIA-NN paths read this cfg, so the flag applies to library generation *and*
+analysis. With `--contaminants none` the flag is correctly absent.
 The estimator keys mass tolerances on the instrument class from DIA-NN's
 known-good table (Astral → MS1 4/MS2 10 ppm; timsTOF → 15 ppm; unidentified →
 automatic calibration), sets DIA/DDA window mode from acquisition, and uses
@@ -552,6 +634,7 @@ Generate a drop-in LC-MS/MS Methods section straight from the facility raw data,
 with the correct UC Davis Proteomics Core instrument-grant acknowledgment:
 ```
 python3 scripts/make_methods.py --raw /path/to/*.d \
+    --fasta-meta ./search.fasta.meta.json \
     --out <session>/output/methods.md --de-dir <session>/output/tables
 python3 scripts/to_docx.py --in <session>/output/methods.md \
     --out <session>/output/methods.docx
@@ -562,7 +645,11 @@ defaults **tagged `[facility default — confirm]`** (the LC column defaults to 
 PepSep C18 10 cm × 150 µm, 1.5 µm — override with `--lc-column`), builds a
 parameter table showing the source of each value, and appends the instrument's
 grant acknowledgment (Fusion Lumos → S10OD021801; Exploris 480 → S10OD026918-01A1;
-timsTOF → Dr. Neil Hunter / HHMI). **Verify the draft against the params table and
+timsTOF → Dr. Neil Hunter / HHMI). `--fasta-meta` writes the **Sequence database**
+paragraph journals require — organism, proteome ID, UniProt release, database type,
+entry count, and the contaminant library with its citation. Without it that
+paragraph is left blank and tagged, never filled with a guess. **Verify the draft
+against the params table and
 polish the prose; keep the acknowledgment exact** (confirm wording at the source
 URL). This can also be run standalone — just point `--raw` at facility data, no
 search/DE needed. → detail: `references/methods.md`.
@@ -575,7 +662,7 @@ python3 scripts/provenance.py --outdir ./reproducibility \
   --setup-json ~/.proteomics-pipeline/setup.json \
   --tools-json ~/.proteomics-pipeline/tools/tools.json \
   --params ./wf/<params_file> --conditions ./conditions.csv \
-  --fasta ./search.fasta --fasta-info '<json from fetch_fasta>' \
+  --fasta ./search.fasta --fasta-info "$(cat ./search.fasta.meta.json)" \
   --raw /path/to/*.d --report ./search_out/report.parquet --de-dir ./de_results \
   --engine <engine> --de-method <dpc|maxlfq> --contrasts "<...>" \
   --q-cutoff 0.01 --logfc 1.0 --adjp 0.05 \

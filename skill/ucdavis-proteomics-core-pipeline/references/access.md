@@ -87,9 +87,11 @@ your own copy in your HIVE home. Run all of this **on HIVE** (via `hive_exec.sh`
    `~/.proteomics-pipeline/tools/diann/<version>/` (needs glibc ≥ Mint 21.2 / .NET 8;
    if the native binary won't run on the node, build the Apptainer image from the
    zip's Dockerfile). Check its `tools.json` `notes`.
-3. **FASTA:** without the Core's pre-staged proteomes, download from UniProt:
+3. **FASTA:** without the Core's pre-staged proteomes, download from UniProt.
+   Resolve the user's organism first — never assume human:
    ```
-   bash scripts/hive_exec.sh 'python3 ~/proteomics-pipeline/scripts/fetch_fasta.py --proteome UP000005640 --add-contaminants --out ~/proteomics-pipeline/search.fasta'
+   python3 scripts/fetch_fasta.py resolve --organism "<what the user said>"
+   bash scripts/hive_exec.sh 'python3 ~/proteomics-pipeline/scripts/fetch_fasta.py fetch --proteome <confirmed UPID> --content one_per_gene --contaminants universal --out ~/proteomics-pipeline/search.fasta'
    ```
 4. Then run the search via SLURM as above. Everything else (DE/figures/report/audit/
    reproducibility) is identical to a local run.

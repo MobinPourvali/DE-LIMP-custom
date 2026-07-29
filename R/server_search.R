@@ -3014,8 +3014,12 @@ server_search <- function(input, output, session, values, add_to_log,
   output$uniprot_results_table <- DT::renderDT({
     req(values$uniprot_results, nrow(values$uniprot_results) > 0)
 
-    display_df <- values$uniprot_results[, c("upid", "organism", "common_name", "protein_count")]
-    colnames(display_df) <- c("ID", "Organism", "Common Name", "Proteins")
+    # Show Type: the results now legitimately mix Reference and strain-level ("Other")
+    # proteomes, and without this column a strain assembly is indistinguishable from
+    # the reference — the user would pick the wrong database from row order alone.
+    display_df <- values$uniprot_results[, c("upid", "organism", "common_name",
+                                             "protein_count", "proteome_type")]
+    colnames(display_df) <- c("ID", "Organism", "Common Name", "Proteins", "Type")
 
     DT::datatable(display_df,
       selection = "single",

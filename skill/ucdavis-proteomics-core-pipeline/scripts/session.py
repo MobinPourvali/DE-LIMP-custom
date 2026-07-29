@@ -347,7 +347,17 @@ def _facts(session_dir):
         "de_method": prov.get("method") or (wf.get("de", {}) or {}).get("method"),
         "q_cutoff": prov.get("q_cutoff"), "logfc": prov.get("logfc"), "adjp": prov.get("adjp"),
         "contrasts": prov.get("contrasts") or [],
-        "fasta": f"{fi.get('source','?')} (n={fi.get('n_sequences','?')})",
+        # Spell the database out: a re-analysis that switched organism, database type,
+        # or contaminant set must show up as a difference, not hide behind one count.
+        "fasta": (f"{fi.get('organism') or '?'} "
+                  f"({fi.get('proteome') or fi.get('source', '?')}), "
+                  f"{fi.get('content_used') or '?'}, "
+                  f"{fi.get('n_proteome', '?')} proteome + "
+                  f"{(fi.get('n_contaminants_appended') or 0) + (fi.get('n_contaminants_already_present') or 0)}"
+                  f" contaminants "
+                  f"[{fi.get('contaminant_set') or ('universal' if fi.get('n_contaminants_appended') else 'none')}]"
+                  + (f", UniProt {fi['uniprot_release']}" if fi.get("uniprot_release") else "")
+                  ) if fi else "?",
         "registry_commit": (man.get("registry") or wf.get("registry") or {}).get("commit"),
         "significant_per_contrast": prov.get("significant_per_contrast") or {},
         "params_text": ptext,

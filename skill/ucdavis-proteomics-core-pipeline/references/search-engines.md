@@ -55,8 +55,8 @@ Windows, or Linux). `setup.sh`/`acquire_tools.sh` fetch the free ones automatica
 | **ThermoRawFileParser** | https://github.com/compomics/ThermoRawFileParser/releases | Win, macOS, Linux | `.raw`→mzML; cross-platform .NET. |
 | **ProteoWizard / msconvert** | https://proteowizard.sourceforge.io/ | Windows (native); Linux/macOS via Docker | vendor→mzML; Linux via the `chambm/pwiz-...` Docker image. |
 | **.NET 8 runtime** | https://dotnet.microsoft.com/download/dotnet/8.0 · installer script https://dot.net/v1/dotnet-install.sh | Win, macOS, Linux | needed only so the **Linux** DIA-NN binary can read `.raw`; `ensure_dotnet8.sh` installs 8.0.latest. **Native Windows doesn't need it.** |
-| **UniProt proteomes (FASTA)** | https://www.uniprot.org/proteomes/ | web / REST | e.g. `UP000005640` (human); `fetch_fasta.py` streams it. |
-| **Contaminants (cRAP)** | https://www.thegpm.org/crap/ | web | `fetch_fasta.py --add-contaminants` appends a maintained set. |
+| **UniProt proteomes (FASTA)** | https://www.uniprot.org/proteomes/ · canonical sets: https://ftp.uniprot.org/pub/databases/uniprot/current_release/knowledgebase/reference_proteomes/ | web / REST / FTP | `fetch_fasta.py resolve` finds the ID from an organism name; `fetch` downloads it. One-per-gene comes from the **FTP** tree — REST `onePerGene` is silently ignored. |
+| **Contaminants (Hao lab, `Cont_`-tagged)** | https://github.com/HaoGroup-ProtContLib/Protein-Contaminant-Libraries-for-DDA-and-DIA-Proteomics | web | `fetch_fasta.py --contaminants <set>`. Universal + sample-type sets; JPR 2022, doi:10.1021/acs.jproteome.2c00145. (The old GPM cRAP URL now 404s — do not use it.) |
 
 **Rule:** whenever you tell a user to run a program, give the public link **+** the exact
 command **+** an OS-appropriate path — not a HIVE/`/quobyte` path they can't reach.

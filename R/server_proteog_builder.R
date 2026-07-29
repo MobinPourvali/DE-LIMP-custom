@@ -1180,9 +1180,10 @@ server_proteog_builder <- function(input, output, session, values) {
 
   output$proteog_uniprot_results_table <- DT::renderDT({
     req(proteog_uniprot_state$results, nrow(proteog_uniprot_state$results) > 0)
+    # Type column: results mix Reference and strain-level proteomes — see server_search.R.
     df <- proteog_uniprot_state$results[, c("upid", "organism", "common_name",
-                                             "protein_count")]
-    colnames(df) <- c("ID", "Organism", "Common Name", "Proteins")
+                                             "protein_count", "proteome_type")]
+    colnames(df) <- c("ID", "Organism", "Common Name", "Proteins", "Type")
     DT::datatable(df, selection = "single", rownames = FALSE,
       options = list(pageLength = 10, dom = "tip", scrollY = "300px"),
       class = "compact stripe")

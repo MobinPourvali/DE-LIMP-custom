@@ -51,6 +51,14 @@ the **2.6 native binary**. Generate the chain, run `submit.sh`, and check each s
 - [ ] `hive_exec.sh` runs commands + `--put`/`--get` staging with the user's key.
 - [ ] **Rebuild-on-HIVE** path (non-Core): `setup.sh` + `acquire_tools.sh` +
       `fetch_fasta.py` build a working env in the user's home.
+- [ ] `fetch_fasta.py fetch --hive` picks `/quobyte/proteomics-grp/MRS/UP000005640_9606.fasta`
+      (20,663 seqs) and **not** `UP000005640_9606_plus_universal_contam.fasta` — the
+      latter already contains contaminants and would double-append them. Verified
+      against a local mock of the MRS layout; confirm on the real mount.
+- [ ] `--contaminants universal --hive` resolves to MRS
+      `kg_nov/fasta/Universal Protein Contaminants.fasta` (381 seqs, `Cont_`-tagged),
+      and a set NOT staged there (e.g. `rat_tissue`) falls through to the Hao lab
+      GitHub download rather than silently substituting the wrong set.
 
 ## 6. The watcher
 - [ ] `watch_run.sh --slurm <jid> --hive` returns the right `state`/`done`/`failed`.
