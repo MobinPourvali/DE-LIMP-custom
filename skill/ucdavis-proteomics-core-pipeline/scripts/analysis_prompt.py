@@ -97,7 +97,14 @@ def main():
         w(f"- Missing values: {missing_policy}")
     if citation:
         w(f"- Citation: {citation}")
-    w(f"- Significance thresholds used: adj.P.Val < {adjp} and |logFC| ≥ {lfc} (ID FDR q ≤ {q_cut}).")
+    w(f"- Significance rule: adj.P.Val < {adjp} (Benjamini-Hochberg) — the adjusted p-value "
+      f"ALONE (ID FDR q ≤ {q_cut}). **No fold-change filter is applied.** |log2FC| = {lfc} "
+      f"({2**float(lfc):.3g}-fold) is drawn on the volcano as a reference line only.")
+    w("- Do not re-impose a fold-change cutoff when you count or describe significant "
+      "proteins, and never call a result significant \"because it is ≥2-fold\". The test "
+      "was of H0: fold change = 0, so that is the claim the error rate covers. You may say "
+      "how many significant proteins also exceed the reference line — as a description of "
+      "effect size, not as a second significance criterion.")
     w("- The exact, self-describing methods text is in `tables/methods.txt` — do not "
       "contradict it or invent a different pipeline.")
     w("")
@@ -116,7 +123,7 @@ def main():
         w(f"- `{a.gsea}` — Gene Set Enrichment results.")
     w("")
     w("Compute everything you cite directly from these files: significant proteins per "
-      f"contrast (apply adj.P.Val < {adjp} and |logFC| ≥ {lfc}), up/down splits, the "
+      f"contrast (apply adj.P.Val < {adjp} only), up/down splits, the "
       "top up/down proteins by fold change, proteins significant in ≥2 contrasts, and — "
       "from the expression matrix + conditions — the most stable proteins (lowest CV "
       "across replicates). Use gene names where available. **Never fabricate a value, "

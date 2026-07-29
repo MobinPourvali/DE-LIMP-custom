@@ -21,7 +21,9 @@ de_dir   <- getone("--de-dir", "output/tables")
 cond_path<- getone("--conditions")
 outdir   <- getone("--outdir", "output/figures")
 adjp_thr <- as.numeric(getone("--adjp", "0.05"))
-logfc_thr<- as.numeric(getone("--logfc", "1"))
+# Reference line only -- drawn and labelled on the volcano, never used to call
+# significance. See the note in run_de.R: significance is the BH adjusted p-value alone.
+logfc_ref<- as.numeric(getone("--logfc", "1"))
 top_n    <- as.integer(getone("--top", "50"))
 dir.create(outdir, showWarnings = FALSE, recursive = TRUE)
 
@@ -38,7 +40,10 @@ add_fig <- function(file, type, caption) figs[[length(figs) + 1]] <<- list(file 
 THEME <- theme_bw(base_size = 13) + theme(panel.grid.minor = element_blank(),
                                           plot.title = element_text(face = "bold"))
 gene_label <- function(df) {
-  g <- if ("Genes" %in% names(df)) df$Genes else NA
+  # Must be one value PER ROW: a bare NA makes ifelse() return a single element, and the
+  # caller's rownames(H) <- ... then dies with "dimnames [1] not equal to array extent".
+  # run_de.R omits Genes whenever the report carries no annotation, so this is reachable.
+  g <- if ("Genes" %in% names(df)) df$Genes else rep(NA_character_, nrow(df))
   ifelse(is.na(g) | g == "", df$Protein.Group, g)
 }
 
@@ -51,7 +56,7 @@ for (f in de_files) {
   tryCatch({
     d <- utils::read.csv(f, stringsAsFactors = FALSE, check.names = FALSE)
     d <- d[is.finite(d$logFC) & is.finite(d$adj.P.Val), ]
-    d$sig <- ifelse(d$adj.P.Val < adjp_thr & abs(d$logFC) >= logfc_thr,
+    d$sig <- ifelse(d$adj.P.Val < adjp_thr,
                     ifelse(d$logFC > 0, "Up", "Down"), "NS")
     d$lab <- gene_label(d)
     nlogp <- -log10(pmax(d$adj.P.Val, .Machine$double.xmin))
@@ -60,17 +65,27 @@ for (f in de_files) {
     p <- ggplot(d, aes(logFC, nlogp, color = sig)) +
       geom_point(alpha = 0.6, size = 1.4) +
       scale_color_manual(values = c(Up = "#d6604d", Down = "#4393c3", NS = "grey75"), name = NULL) +
-      geom_vline(xintercept = c(-logfc_thr, logfc_thr), linetype = "dashed", color = "grey50") +
+      geom_vline(xintercept = c(-logfc_ref, logfc_ref), linetype = "dashed", color = "grey50") +
       geom_hline(yintercept = -log10(adjp_thr), linetype = "dashed", color = "grey50") +
+      # Sit the labels at the FOOT of each line, tucked inward (hjust 0 = extend right of
+      # the left line, 1 = extend left of the right line). Anchoring them at the top
+      # collided with the repelled point labels and clipped at the panel edge.
+      annotate("text", x = c(-logfc_ref, logfc_ref), y = min(nlogp, na.rm = TRUE),
+               label = sprintf("%.3g-fold", 2^logfc_ref), hjust = c(-0.12, 1.12),
+               vjust = -0.6, size = 2.9, color = "grey40") +
       labs(title = paste0("Volcano — ", ct),
-           subtitle = sprintf("%d up, %d down (adj.P<%.2g, |logFC|>=%.2g)",
-                              sum(d$sig == "Up"), sum(d$sig == "Down"), adjp_thr, logfc_thr),
+           subtitle = sprintf("%d up, %d down at adj.P < %.2g; dashed lines mark %.3g-fold (reference, not a cutoff)",
+                              sum(d$sig == "Up"), sum(d$sig == "Down"), adjp_thr, 2^logfc_ref),
            x = "log2 fold change", y = "-log10 adjusted p-value") + THEME
     if (has_repel && nrow(top)) p <- p + ggrepel::geom_text_repel(
       data = top, aes(label = lab), size = 3, max.overlaps = 20, show.legend = FALSE)
     fn <- file.path(outdir, sprintf("volcano_%s.png", make.names(ct)))
     ggsave(fn, p, width = 7, height = 6, dpi = 200)
-    add_fig(fn, "volcano", sprintf("Volcano plot for %s: log2 fold change vs significance; coloured points pass adj.P<%.2g and |logFC|>=%.2g.", ct, adjp_thr, logfc_thr))
+    add_fig(fn, "volcano", sprintf(paste("Volcano plot for %s: log2 fold change vs significance.",
+      "Coloured points are significant at adj.P < %.2g (Benjamini-Hochberg); no fold-change",
+      "filter is applied. Vertical dashed lines mark %.3g-fold for reference only, so a",
+      "coloured point inside them is a confidently measured small change, not an error."),
+      ct, adjp_thr, 2^logfc_ref))
 
     if ("P.Value" %in% names(d)) {
       pp <- ggplot(d, aes(P.Value)) +
@@ -142,17 +157,26 @@ if (file.exists(em_path)) {
 
   # ---- heatmap of top differential proteins ----
   tryCatch({
-    sig_ids <- character(0)
+    # Rank by strength of evidence (smallest adjusted p across contrasts). Selecting by
+    # matrix row order instead would make "top differential proteins" an arbitrary slice
+    # of the significant set -- which matters more now that no fold-change filter thins it.
+    best_p <- numeric(0)
     for (f in de_files) {
       d <- utils::read.csv(f, stringsAsFactors = FALSE, check.names = FALSE)
       d <- d[is.finite(d$adj.P.Val) & is.finite(d$logFC), ]
-      s <- d$Protein.Group[d$adj.P.Val < adjp_thr & abs(d$logFC) >= logfc_thr]
-      sig_ids <- union(sig_ids, s)
+      d <- d[d$adj.P.Val < adjp_thr, , drop = FALSE]
+      if (!nrow(d)) next
+      v <- stats::setNames(d$adj.P.Val, d$Protein.Group)
+      shared <- intersect(names(v), names(best_p))
+      if (length(shared)) best_p[shared] <- pmin(best_p[shared], v[shared])
+      new <- setdiff(names(v), names(best_p))
+      if (length(new)) best_p <- c(best_p, v[new])
     }
-    pick <- intersect(sig_ids, rownames(Mi))
+    sig_ids <- names(sort(best_p))              # most significant first
+    pick <- intersect(sig_ids, rownames(Mi))    # intersect() preserves sig_ids' order
     if (length(pick) < 5) {  # fall back to most-variable proteins
       v <- apply(Mi, 1, var); pick <- names(sort(v, decreasing = TRUE))[seq_len(min(top_n, nrow(Mi)))]
-    } else pick <- head(pick[order(match(pick, rownames(Mi)))], top_n)
+    } else pick <- head(pick, top_n)
     H <- Mi[pick, , drop = FALSE]
     lab <- gene_label(em[match(rownames(H), em$Protein.Group), , drop = FALSE])
     lab <- ifelse(is.na(lab), rownames(H), lab)
