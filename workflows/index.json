@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "repo": "bsphinney/DE-LIMP",
-  "generated": "2026-07-28",
+  "generated": "2026-07-29",
   "workflows": [
     {
       "id": "diann_astral_dia_human",
@@ -88,6 +88,54 @@
         "adjp": 0.05
       },
       "validated": {}
+    },
+    {
+      "id": "fragpipe_diatracer_timstof_dia_human",
+      "name": "FragPipe + diaTracer — Bruker timsTOF dia-PASEF (human)",
+      "path": "workflows/fragpipe_diatracer_timstof_dia_human",
+      "match": {
+        "acquisition": "DIA",
+        "instruments": [
+          "timsTOF HT",
+          "timsTOF Pro",
+          "timsTOF Pro 2",
+          "timsTOF SCP",
+          "timsTOF Ultra"
+        ],
+        "instrument_aliases": [
+          "timstof",
+          "tims"
+        ],
+        "organism": "Homo sapiens",
+        "organism_taxid": 9606
+      },
+      "engine": {
+        "name": "fragpipe",
+        "version": "24.0"
+      },
+      "fasta": {
+        "uniprot_proteome": "UP000005640",
+        "add_contaminants": true
+      },
+      "search": {
+        "estimate_params": false,
+        "var_mods": "",
+        "param_overrides": {},
+        "params_file": "DIA_SpecLib_Quant_diaPASEF.workflow",
+        "extra_files": []
+      },
+      "de": {
+        "method": "maxlfq",
+        "q_cutoff": 0.01,
+        "logfc": 1.0,
+        "adjp": 0.05
+      },
+      "validated": {
+        "date": "",
+        "by": "",
+        "dataset": "",
+        "notes": "NOT VALIDATED. Parameters are FragPipe 24.0's own bundled diaPASEF preset and the pipeline wiring is verified against FragPipe source, but no facility dataset has been run through this route yet. The first run IS the validation run: compare it against the DIA-NN route on the same files with compare_searches.py and record the outcome here before treating this as a site SOP.\n"
+      }
     },
     {
       "id": "sage_timstof_dda_human",

@@ -309,6 +309,49 @@ python3 scripts/run_search.py --tools ~/.proteomics-pipeline/tools/tools.json \
     --fasta ./search.fasta --out ./search_out --files /path/to/*.d --threads 16
 ```
 - DIA → DIA-NN; DDA → Sage; FragPipe only if the bundle names it or the user asks.
+- **FragPipe + diaTracer (timsTOF dia-PASEF, spectrum-centric DIA).** A second DIA route,
+  used when the bundle names it or the user asks for it. diaTracer traces 3-D features and
+  writes pseudo-MS/MS spectra, MSFragger searches those to build a library from the data
+  itself, then **DIA-NN quantifies against it**. Worth reaching for as a cross-check on the
+  DIA-NN route, or when the search needs semi-tryptic / nonspecific / open-modification
+  behaviour that library-free DIA-NN handles poorly.
+  - **⚠ Licensing — get this right, it is easy to state wrongly.** The gate is
+    **MSFragger / IonQuant / diaTracer** (one shared academic licence; commercial users
+    license via fragmatics.com). The DIA-NN that FragPipe bundles is explicitly *"available
+    for both academic and commercial use within FragPipe"*, so DIA-NN is **not** the
+    restriction here. A commercial user is not locked out — they must license the three
+    gated tools. **Never tell them the route is closed to them.**
+  - **⚠ The clause that matters for a core facility:** the academic licence forbids *"any
+    work product, report or deliverable by LICENSEE, for a commercial or for-profit
+    organization"* — which reads on fee-for-service work for an industry client. If asked
+    whether their work qualifies, send them to info@fragmatics.com and their licensing
+    office. Do **not** rule on it yourself. → `references/search-engines.md`.
+  - Output is DIA-NN's own, in `<workdir>/dia-quant-output/`. With FragPipe's bundled
+    DIA-NN 1.8.2 Beta 8 that is **`report.tsv` — there is no `report.parquet`** unless
+    someone configured DIA-NN 2.x. `adapt_fragpipe` handles either.
+  - **Never point FragPipe at shared raw files directly — `run_search.py` stages symlinks
+    for you.** diaTracer writes its mzML *next to the input*, so two people searching the
+    same dataset (a class working from one folder) would race to write the same file, and a
+    read-only share fails outright. `diatracer_stage.py` builds a per-run directory of
+    symlinks; FragPipe normalizes paths without resolving them, so the output lands in
+    **your** directory and the shared raw folder is never written to. This happens
+    automatically for DIA + `.d` inputs; nothing to pass.
+  - **Existing pseudo-spectra are reused, never regenerated.** The stager looks for the
+    mzML in the staging dir *and* beside the real `.d`, and when it finds one emits the
+    reuse form — the mzML as `DDA` plus the `.d` as `DIA-Quant` — so DIA-NN still
+    quantifies against the real chromatograms. That saves ~20 min per file, so a re-search
+    with different parameters is cheap. Report how many were reused.
+  - A manifest data type that isn't one of `DIA`/`GPF-DIA`/`DIA-Quant`/`DIA-Lib`/`DDA+`/
+    `DDA` is **silently treated as DDA**, quietly turning a DIA run into a DDA one.
+  - FragPipe 24.0 bundles **DIA-NN 1.8.2_beta_8**, older than the 2.x the `diann_*`
+    workflows pin. Expect different numbers from that alone; say so rather than
+    attributing every difference to the spectrum-centric approach.
+  - Budget roughly **20 min per file for the diaTracer conversion alone** (paper: 34 files,
+    32 cores, ~19.4 min each), before MSFragger and DIA-NN. The mzML are **reusable**, so a
+    re-search with different parameters skips it. Needs Java 11+, MSFragger 4.4+,
+    IonQuant 1.11.18+, diaTracer 2.2.1+. The three gated jars are **not** in the FragPipe
+    zip and **cannot be scripted** — a human accepts the licence once and mints a key, then
+    point `FRAGPIPE_TOOLS_FOLDER` at them. → `references/search-engines.md`.
 - **⚠ DIA-NN licensing (ask before a DIA run):** DIA-NN's free "Academia" build is
   licensed for **academic / non-profit use only**. If the user is in a **commercial /
   non-academic** setting, do NOT use DIA-NN — **offer AlphaDIA** (`--engine alphadia`,
@@ -549,6 +592,28 @@ python3 scripts/make_report.py --out OUTPUT_FILES.md \
 `OUTPUT_FILES.md` lists every file (figures, audit, search/DE outputs, the bundle)
 with its size and a plain-language description, grouped by purpose, and flags
 anything unrecognized (never silently omitted).
+
+### 11a. Comparing two searches of the same files (tool bake-off)
+When the same raw files have been searched more than once — DIA-NN library-free vs
+FragPipe/diaTracer, two engine versions, two parameter sets — compare the **searches**,
+not just the DE tables:
+```
+python3 scripts/compare_searches.py --out <session>/output/search_comparison --q 0.01 \
+  --search "DIA-NN:<sessA>/output/search/report.parquet" \
+  --search "diaTracer:<sessB>/output/search/report.parquet"
+```
+Writes `SEARCH_COMPARISON.md` + CSVs: protein groups and per-run depth, how many proteins
+survive in **every** run, median CV across runs, the shared/unique split with Jaccard, and
+the per-run correlation of log2 intensity on shared proteins. Unique-to-one-search proteins
+are listed in full.
+
+**Do not report "engine X found more proteins" as the verdict.** Depth, completeness and CV
+have to be read together — a search can identify more while quantifying them less
+reproducibly or in fewer runs. Two caveats to state whenever you present this: the CV is
+computed across all runs with no group labels, so it only measures precision when those runs
+are replicates; and the comparison assumes protein-group identifiers are comparable, which
+fails if the searches used different FASTAs or inference rules. Then run 11b on the DE output
+to see whether any of it changes which proteins come out significant.
 
 ### 11b. If this is a re-analysis: compare to the original
 When step 1b found a prior analysis of the same dataset, compare the two with the

@@ -134,6 +134,177 @@ Apache-2.0 — the open-source alternative to DIA-NN for non-academic users. Lib
    - v0.14.x has no native protein grouping → may need `sage_protein_groups.py`
      post-hoc (DE-LIMP keeps it on HIVE). v0.15+ has IDPicker grouping.
 
+### FragPipe + diaTracer — spectrum-centric DIA (timsTOF dia-PASEF)
+
+Verified against FragPipe 24.0 source, the diaTracer site, and the paper. Where a claim
+below is load-bearing the file that proves it is named.
+
+**What it is.** diaTracer does 3-D (m/z, RT, ion mobility) peak tracing on dia-PASEF `.d`
+data and emits **pseudo-MS/MS spectra as mzML**, which MSFragger then searches as if they
+were DDA. That builds a spectral library from the data itself; DIA-NN then quantifies
+against the **original `.d`**. Because identification is an ordinary database search, this
+route reaches what library-free DIA-NN does poorly: semi-tryptic (N-terminomics),
+nonspecific (HLA), and open / mass-offset PTM searches.
+
+Full chain: `.d` → **diaTracer** → MSFragger (DDA mode) → MSBooster → Percolator →
+Philosopher → EasyPQP (library) → **DIA-NN** (quant vs the original `.d`) → IonQuant.
+
+Cite: K. Li et al., *diaTracer enables spectrum-centric analysis of diaPASEF proteomics
+data*, Nat Commun 16, 95 (2025).
+
+| Thing | Value | Verified from |
+|---|---|---|
+| FragPipe | 24.0 (2025-12-24); diaTracer arrived in 22.0 | releases API |
+| Requires | MSFragger 4.4+, IonQuant 1.11.18+, diaTracer 2.2.1+, Java 11+, Python 3.9–3.11 | 24.0 release notes |
+| Workflow preset | `DIA_SpecLib_Quant_diaPASEF.workflow` (`diatracer.run-diatracer=true`) | FragPipe 24.0 `workflows/` |
+| Manifest data type | **`DIA`** | `InputLcmsFile.java` |
+| Output dir | `<workdir>/dia-quant-output/` | `CmdDiann.java` |
+| Bundled DIA-NN | 1.8.2 Beta 8 | `tools/diann/` |
+
+Other presets that enable diaTracer: `DIA_SpecLib_Quant_Phospho_diaPASEF`,
+`Nonspecific-HLA-diaPASEF`, `chemprot-ABPP-IADTB-diaPASEF`. Plain `DIA_SpecLib_Quant` and
+`DIA_DIA-Umpire_SpecLib_Quant` have it **false** — those are the Orbitrap/mzML paths, so
+picking one of those for `.d` data silently gives you a different method.
+
+#### Output: expect `report.tsv`, NOT parquet
+
+FragPipe branches on the DIA-NN version (`CmdDiann.java`):
+
+- **Bundled DIA-NN 1.8.2 Beta 8 (the default) → `dia-quant-output/report.tsv` only. There is
+  no `report.parquet`.** Also produces `MSstats.csv` (gated on DIA-NN < 2.0).
+- Only if you point `--config-diann` at your own **DIA-NN 2.x** does it write
+  `report.parquet` (and convert it to TSV as well).
+
+So `adapt_fragpipe_dia()` reads whichever exists, preferring parquet and otherwise
+converting the TSV. In the stock configuration the TSV path is the one that runs.
+`--matrices` also yields `report.pg_matrix.tsv` / `report.pr_matrix.tsv` (MaxLFQ-normalised,
+1% FDR, samples as columns) — the paper's own DE route uses `report.pg_matrix.tsv`.
+
+`combined_protein.tsv` **also** appears, because IonQuant runs on the pseudo-MS/MS mzML
+(typed `DDA`). **Do not use it as the quant of record**: it is derived from pseudo-spectra
+rather than the original `.d` chromatograms, is not equivalent to the DIA-NN numbers, and
+the paper never uses it. This is why `adapt_fragpipe()` tries the DIA route *first*.
+
+#### Gotchas that will bite on a cluster
+
+- **The mzML is written next to the `.d` file, not into `--workdir`** (`CmdDiaTracer.java`
+  rewrites the input path). This is handled for you — see "Symlink staging" below — but it
+  is the reason that machinery exists.
+- **Never put `.d` in a parent directory name.** FragPipe builds the output name with
+  Java's `String.replace`, which replaces *every* occurrence, so `/data/proj.d/run.d`
+  becomes `/data/proj_diatracer.mzML/run_diatracer.mzML`.
+- **A bad manifest data type does not error — it silently becomes `DDA`.** Accepted values
+  are `DIA`, `GPF-DIA`, `DIA-Quant`, `DIA-Lib`, `DDA+`, `DDA`; anything else falls through
+  the `default:` branch to DDA and your DIA run quietly becomes a DDA run. Use exactly `DIA`.
+- **`DIA-Quant` is quantify-only** — it does not trigger diaTracer and is excluded from
+  library generation. It is for reusing an existing library, not for a fresh run.
+- diaTracer only fires when the type is `DIA`/`GPF-DIA`/`DIA-Lib` **and** the file ends in
+  `.d`; FragPipe hard-errors if diaTracer is on and a DIA input is not `.d`.
+- **First headless run needs all three config flags**: `--config-tools-folder`,
+  `--config-diann`, `--config-python`. Since 22.0 MSFragger, IonQuant **and diaTracer must
+  live in the same folder**. diaTracer also needs the native Bruker libraries, which ship
+  in MSFragger's zip under `ext/`.
+- 24.0 fixed a bug where the **log file was not saved in headless mode** — use 24.0, not
+  23.x, for unattended cluster runs.
+- On HIVE, an Apptainer image exists: `apptainer pull docker://fcyucn/fragpipe:latest`,
+  then `apptainer shell --compat --bind /quobyte:/quobyte fragpipe_latest.sif`. Both
+  `--compat` and an explicit `--bind` are required.
+
+#### Symlink staging + reuse (`diatracer_stage.py`) — automatic
+
+Two problems, one mechanism. `run_search.py` calls this itself for DIA + `.d` inputs.
+
+**Problem 1 — concurrent users collide.** diaTracer derives its output path from the input
+path (`CmdDiaTracer.java:138`):
+
+```java
+f.getPath().toAbsolutePath().normalize().toString().replace(".d", "_diatracer.mzML")
+```
+
+So two people searching the same shared dataset both write `<name>_diatracer.mzML` into the
+same folder and race each other; a read-only share fails outright. That is the normal case
+for a class working from one copy of the data.
+
+**The fix rests on one detail: `normalize()` is not `toRealPath()`.** It collapses `.` and
+`..` but does **not** resolve symlinks. So a manifest pointing at a *symlink* to the `.d`
+makes diaTracer write next to the **symlink**. `diatracer_stage.py` gives each run its own
+directory of symlinks (names keep the `.d` suffix — `CmdDiaTracer` requires
+`endsWith(".d")`), so every user gets their own pseudo-spectra and the shared raw directory
+is never written to and may be read-only.
+
+**Problem 2 — reconversion is expensive (~20 min/file).** The stager looks for an existing
+mzML both in the staging dir and beside the real `.d` (so a facility pre-conversion counts),
+matching `_diatracer.mzML` / `.diatracer.mzML` case-insensitively since the spelling has
+varied across versions. When one exists it emits the preset's own reuse form:
+
+| Situation | Manifest rows |
+|---|---|
+| fresh | `<stage>/<name>.d` → `DIA` |
+| already converted | `<mzML>` → `DDA`, **and** `<stage>/<name>.d` → `DIA-Quant` |
+
+The `DIA-Quant` row matters: it keeps DIA-NN quantifying against the real `.d`
+chromatograms while skipping the conversion. `DIA-Quant` does not trigger diaTracer, which
+is exactly why it is safe here.
+
+It refuses two things outright: an input that is not a `.d`, and a staging path with `.d`
+inside a *directory* name (which Java's replace-every-occurrence would mangle).
+
+#### Runtime
+
+From the paper (34 dia-PASEF files, 32 logical cores, 128 GB): diaTracer **661 min total,
+~19.4 min per file**; the rest of FragPipe including DIA-NN quant **87 min**. DIA-NN
+library-free on the same data took 1486 min. **The pseudo-MS/MS mzML are reusable** — a
+semi-tryptic re-search from existing mzML took 110 min, so conversion is a one-time cost
+per cohort. No GPU is needed anywhere in this path. No published RAM minimum; `--ram` maps
+to diaTracer's `-Xmx`, and real OOMs are reported, so be generous in `sbatch --mem`.
+
+#### Licensing — read this before quoting it to a user
+
+| Tool | Terms |
+|---|---|
+| MSFragger, IonQuant, **diaTracer** | Free for **academic / non-commercial / educational** use under one shared academic licence ("MSFragger + IonQuant + diaTracer Suite", The Regents of the University of Michigan — the PDF is byte-identical for all three). Commercial users license via **Fragmatics** (fragmatics.com, info@fragmatics.com). |
+| **DIA-NN inside FragPipe** | *"Available for both academic and commercial use **within FragPipe**"* (`FRAGPIPE-THIRD-PARTY-LICENSES.txt`). The academic-only limit on Demichev's *standalone* DIA-NN does not apply to the bundled binary — **but the grant is scoped to use within FragPipe**, so do not treat `tools/diann/` as a commercially-usable standalone DIA-NN. |
+
+The commercial gate on this route is MSFragger/IonQuant/diaTracer, **not** DIA-NN. A
+commercial user is not locked out; they license the three gated tools via Fragmatics.
+Existing University of Michigan commercial licences must be re-confirmed with Fragmatics.
+
+**⚠ The core-facility clause — the most important line here.** The academic licence
+prohibits *"any work product, report or deliverable by LICENSEE, for a commercial or
+for-profit organization."* That wording reaches an **academic core delivering results to an
+industry client**, which is ordinary fee-for-service work. The quote is verbatim; whether it
+binds a given engagement is a legal question, not one for this skill. If a user asks whether
+their fee-for-service or industry-funded work is covered, tell them to ask
+info@fragmatics.com and their own licensing office. **Do not answer it for them.**
+
+**You cannot fully script the install.** MSFragger/IonQuant/diaTracer come from a web form
+requiring name, academic email, organization and licence acceptance. There is a separate
+licence-key token for automated installs (Bioconda uses exactly this). So a human must
+accept the licence once and mint a key; `acquire_tools.sh` can download FragPipe itself but
+never the three gated jars. That is why `--config-tools-folder` is mandatory.
+
+**Turning DIA-NN off does not remove it.** DIA-NN is also the deep-learning predictor inside
+MSBooster rescoring — this preset sets `msbooster.rt-model=DIA-NN`,
+`msbooster.spectra-model=DIA-NN`, `msbooster.im-model=DIA-NN`, and `CmdMSBooster.java`
+passes the DIA-NN path in. Unchecking "quantify with DIA-NN" only skips the quant step; the
+executable still runs during rescoring unless MSBooster is switched to Koina models. And on
+**Linux there is no DIA-NN-free quant path at all**: FragPipe's Skyline backend returns null
+on non-Windows (`Skyline.java`) and only ships `SkylineRunner.exe`, so DIA-NN off means IDs
+and a library but no quant matrix.
+
+**⚠ Do not swap in your own DIA-NN 2.x via `--config-diann`.** Beyond breaking the output
+shape (2.x writes parquet), the DIA-NN 2.x licence adds: *"Usage of DIA-NN in the cloud or
+on any computer setups that are not in your immediate possession is only permitted under
+Collaborative use."* A shared cluster is arguably not "in your immediate possession". The
+bundled 1.8.2 Beta 8 carries no such clause. This clause is **also worth knowing for the
+`diann_*` workflows**, which pin DIA-NN 2.x and are routinely run on a shared HPC — flag it
+to the user rather than deciding for them.
+
+**Comparing it against DIA-NN.** That is the point of having both — `compare_searches.py`
+(SKILL.md step 11a). FragPipe bundles DIA-NN 1.8.2 Beta 8 while the `diann_*` workflows pin
+2.x, so part of any difference is engine version rather than the spectrum-centric approach.
+Say so rather than crediting it all to the method.
+
 ### FragPipe (opt-in; adapter required)
 - Build an `.fp-manifest` from the files + data type (DIA/DDA).
 - `<cmd> --headless --workflow <.workflow> --manifest <m> --workdir <out>
