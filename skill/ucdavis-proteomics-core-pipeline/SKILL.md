@@ -329,10 +329,20 @@ python3 scripts/run_search.py --tools ~/.proteomics-pipeline/tools/tools.json \
   - Output is DIA-NN's own, in `<workdir>/dia-quant-output/`. With FragPipe's bundled
     DIA-NN 1.8.2 Beta 8 that is **`report.tsv` — there is no `report.parquet`** unless
     someone configured DIA-NN 2.x. `adapt_fragpipe` handles either.
-  - **The pseudo-MS/MS mzML is written next to the `.d` file, not into the workdir**, so
-    the raw-data directory must be **writable** — this fails on a read-only mount. And a
-    manifest data type that isn't one of `DIA`/`GPF-DIA`/`DIA-Quant`/`DIA-Lib`/`DDA+`/`DDA`
-    is **silently treated as DDA**, quietly turning a DIA run into a DDA one. Use `DIA`.
+  - **Never point FragPipe at shared raw files directly — `run_search.py` stages symlinks
+    for you.** diaTracer writes its mzML *next to the input*, so two people searching the
+    same dataset (a class working from one folder) would race to write the same file, and a
+    read-only share fails outright. `diatracer_stage.py` builds a per-run directory of
+    symlinks; FragPipe normalizes paths without resolving them, so the output lands in
+    **your** directory and the shared raw folder is never written to. This happens
+    automatically for DIA + `.d` inputs; nothing to pass.
+  - **Existing pseudo-spectra are reused, never regenerated.** The stager looks for the
+    mzML in the staging dir *and* beside the real `.d`, and when it finds one emits the
+    reuse form — the mzML as `DDA` plus the `.d` as `DIA-Quant` — so DIA-NN still
+    quantifies against the real chromatograms. That saves ~20 min per file, so a re-search
+    with different parameters is cheap. Report how many were reused.
+  - A manifest data type that isn't one of `DIA`/`GPF-DIA`/`DIA-Quant`/`DIA-Lib`/`DDA+`/
+    `DDA` is **silently treated as DDA**, quietly turning a DIA run into a DDA one.
   - FragPipe 24.0 bundles **DIA-NN 1.8.2_beta_8**, older than the 2.x the `diann_*`
     workflows pin. Expect different numbers from that alone; say so rather than
     attributing every difference to the spectrum-centric approach.

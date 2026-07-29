@@ -334,9 +334,31 @@ def run_fragpipe(cmd, bundle, params, files, fasta, out, threads, sbatch):
     acq = bundle.get("acquisition", "DDA").upper()
     manifest = os.path.join(out, "fragpipe.fp-manifest")
     dtype = "DIA" if acq == "DIA" else "DDA"
-    with open(manifest, "w") as fh:
-        for f in files:
-            fh.write(f"{os.path.abspath(f)}\t\t\t{dtype}\n")
+
+    if acq == "DIA" and any(f.rstrip("/").endswith(".d") for f in files):
+        # diaTracer writes its pseudo-MS/MS mzML NEXT TO THE INPUT, so pointing it at the
+        # shared raw files would have two users racing to write the same output (and would
+        # fail outright on a read-only share). Stage per-user symlinks instead: FragPipe
+        # normalizes but does not resolve them, so the output lands in our own directory.
+        # The stager also reuses any conversion that already exists.
+        stage = os.path.join(out, "diatracer_stage")
+        res = subprocess.run(
+            [sys.executable,
+             os.path.join(os.path.dirname(os.path.abspath(__file__)), "diatracer_stage.py"),
+             "--raw", *files, "--stage", stage, "--manifest", manifest],
+            capture_output=True, text=True)
+        if res.returncode != 0:
+            sys.stderr.write(res.stderr)
+            sys.exit("diatracer_stage.py failed — cannot build a safe FragPipe manifest.")
+        info = json.loads(res.stdout)
+        print(f"  [diatracer] staged {info['n_files']} file(s): "
+              f"{info['n_to_convert']} to convert, {info['n_reused']} reused -> {stage}")
+        for n in info.get("notes", []):
+            print(f"  [diatracer] {n}")
+    else:
+        with open(manifest, "w") as fh:
+            for f in files:
+                fh.write(f"{os.path.abspath(f)}\t\t\t{dtype}\n")
     tools = os.environ.get("FRAGPIPE_TOOLS_FOLDER", "")
     tools_arg = f"--config-tools-folder {shlex.quote(tools)}" if tools else ""
     full = (f"{cmd} --headless --workflow {shlex.quote(params)} "

@@ -188,9 +188,8 @@ the paper never uses it. This is why `adapt_fragpipe()` tries the DIA route *fir
 #### Gotchas that will bite on a cluster
 
 - **The mzML is written next to the `.d` file, not into `--workdir`** (`CmdDiaTracer.java`
-  rewrites the input path). **The raw-data directory must be writable** — a read-only
-  `/quobyte` mount or a read-only share will fail. Stage the `.d` files somewhere writable
-  first, or expect the run to die.
+  rewrites the input path). This is handled for you — see "Symlink staging" below — but it
+  is the reason that machinery exists.
 - **Never put `.d` in a parent directory name.** FragPipe builds the output name with
   Java's `String.replace`, which replaces *every* occurrence, so `/data/proj.d/run.d`
   becomes `/data/proj_diatracer.mzML/run_diatracer.mzML`.
@@ -210,6 +209,45 @@ the paper never uses it. This is why `adapt_fragpipe()` tries the DIA route *fir
 - On HIVE, an Apptainer image exists: `apptainer pull docker://fcyucn/fragpipe:latest`,
   then `apptainer shell --compat --bind /quobyte:/quobyte fragpipe_latest.sif`. Both
   `--compat` and an explicit `--bind` are required.
+
+#### Symlink staging + reuse (`diatracer_stage.py`) — automatic
+
+Two problems, one mechanism. `run_search.py` calls this itself for DIA + `.d` inputs.
+
+**Problem 1 — concurrent users collide.** diaTracer derives its output path from the input
+path (`CmdDiaTracer.java:138`):
+
+```java
+f.getPath().toAbsolutePath().normalize().toString().replace(".d", "_diatracer.mzML")
+```
+
+So two people searching the same shared dataset both write `<name>_diatracer.mzML` into the
+same folder and race each other; a read-only share fails outright. That is the normal case
+for a class working from one copy of the data.
+
+**The fix rests on one detail: `normalize()` is not `toRealPath()`.** It collapses `.` and
+`..` but does **not** resolve symlinks. So a manifest pointing at a *symlink* to the `.d`
+makes diaTracer write next to the **symlink**. `diatracer_stage.py` gives each run its own
+directory of symlinks (names keep the `.d` suffix — `CmdDiaTracer` requires
+`endsWith(".d")`), so every user gets their own pseudo-spectra and the shared raw directory
+is never written to and may be read-only.
+
+**Problem 2 — reconversion is expensive (~20 min/file).** The stager looks for an existing
+mzML both in the staging dir and beside the real `.d` (so a facility pre-conversion counts),
+matching `_diatracer.mzML` / `.diatracer.mzML` case-insensitively since the spelling has
+varied across versions. When one exists it emits the preset's own reuse form:
+
+| Situation | Manifest rows |
+|---|---|
+| fresh | `<stage>/<name>.d` → `DIA` |
+| already converted | `<mzML>` → `DDA`, **and** `<stage>/<name>.d` → `DIA-Quant` |
+
+The `DIA-Quant` row matters: it keeps DIA-NN quantifying against the real `.d`
+chromatograms while skipping the conversion. `DIA-Quant` does not trigger diaTracer, which
+is exactly why it is safe here.
+
+It refuses two things outright: an input that is not a `.d`, and a staging path with `.d`
+inside a *directory* name (which Java's replace-every-occurrence would mangle).
 
 #### Runtime
 
