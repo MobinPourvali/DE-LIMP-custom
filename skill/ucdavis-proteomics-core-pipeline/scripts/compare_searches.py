@@ -36,14 +36,28 @@ def read_report(path, q_cut):
     comparable across tools -- the global one is the defensible cross-tool cutoff --
     so prefer Global.Q.Value / Lib.PG.Q.Value and fall back only when absent.
     """
-    try:
-        import pyarrow.parquet as pq
-    except ImportError:
-        sys.exit("pyarrow is required. It ships with the skill's conda env (setup.sh).")
     if not os.path.exists(path):
         sys.exit(f"No such report: {path}")
-    tbl = pq.read_table(path)
-    cols = {c.lower(): c for c in tbl.column_names}
+
+    # The FragPipe/diaTracer route emits report.TSV, not parquet — FragPipe 24 bundles
+    # DIA-NN 1.8.2 beta 8, which has no parquet writer. Assuming parquet made this tool
+    # unable to read the very output it exists to compare against. Accept either.
+    is_tsv = path.lower().endswith((".tsv", ".txt", ".csv"))
+    if is_tsv:
+        import csv as _csv
+        delim = "," if path.lower().endswith(".csv") else "\t"
+        with open(path, newline="") as fh:
+            rdr = _csv.DictReader(fh, delimiter=delim)
+            names = rdr.fieldnames or []
+            rows = list(rdr)
+        cols = {c.lower(): c for c in names}
+    else:
+        try:
+            import pyarrow.parquet as pq
+        except ImportError:
+            sys.exit("pyarrow is required for parquet reports. It ships with the skill's conda env (setup.sh).")
+        tbl = pq.read_table(path)
+        cols = {c.lower(): c for c in tbl.column_names}
 
     def col(*names):
         for n in names:
@@ -58,10 +72,16 @@ def read_report(path, q_cut):
     c_q = col("Global.PG.Q.Value", "Global.Q.Value", "Lib.PG.Q.Value", "Q.Value")
     q_basis = c_q or "(none — no q-value column, nothing filtered)"
 
-    runs = tbl.column(c_run).to_pylist()
-    pgs = tbl.column(c_pg).to_pylist()
-    ints = tbl.column(c_int).to_pylist()
-    qs = tbl.column(c_q).to_pylist() if c_q else [0.0] * len(runs)
+    if is_tsv:
+        runs = [r.get(c_run) for r in rows]
+        pgs = [r.get(c_pg) for r in rows]
+        ints = [r.get(c_int) for r in rows]
+        qs = [r.get(c_q) for r in rows] if c_q else [0.0] * len(rows)
+    else:
+        runs = tbl.column(c_run).to_pylist()
+        pgs = tbl.column(c_pg).to_pylist()
+        ints = tbl.column(c_int).to_pylist()
+        qs = tbl.column(c_q).to_pylist() if c_q else [0.0] * len(runs)
 
     data, dropped = defaultdict(dict), 0
     for run, pg, val, q in zip(runs, pgs, ints, qs):
