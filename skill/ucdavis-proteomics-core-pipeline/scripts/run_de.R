@@ -168,7 +168,14 @@ fit <- limma::eBayes(fit)
 
 # ---- write per-contrast results ---------------------------------------------
 gene_cols <- intersect(c("Genes", "Protein.Names"), names(genes))
-ann <- if (length(gene_cols)) genes[, c(if ("Protein.Group" %in% names(genes)) "Protein.Group", gene_cols), drop = FALSE] else NULL
+# limpa returns the protein identifier in rownames(genes), not as a column. Guarding
+# the merge key on its presence silently dropped it, so the merges below failed with
+# "'by' must specify a uniquely valid column" AFTER quantification had completed.
+ann <- if (length(gene_cols)) {
+  .a <- genes[, gene_cols, drop = FALSE]
+  .a$Protein.Group <- if ("Protein.Group" %in% names(genes)) as.character(genes$Protein.Group) else rownames(genes)
+  .a[, c("Protein.Group", gene_cols), drop = FALSE]
+} else NULL
 
 # Expression matrix (proteins x samples, log2) — feeds figures (PCA/heatmap) and
 # the report; mirrors DE-LIMP's Expression_Matrix.csv export.
@@ -183,7 +190,13 @@ all_sig <- list()
 for (cn in forms) {
   tt <- limma::topTable(fit, coef = cn, number = Inf, adjust.method = "BH")
   tt$Protein.Group <- rownames(tt)
-  if (!is.null(ann)) tt <- merge(tt, ann, by = "Protein.Group", all.x = TRUE, sort = FALSE)
+  # topTable() already carries fit$genes, so merging ann in wholesale produced
+  # Genes.x/Genes.y duplicates. Only bring across columns that aren't there yet.
+  if (!is.null(ann)) {
+    .miss <- setdiff(names(ann), c("Protein.Group", names(tt)))
+    if (length(.miss)) tt <- merge(tt, ann[, c("Protein.Group", .miss), drop = FALSE],
+                                   by = "Protein.Group", all.x = TRUE, sort = FALSE)
+  }
   tt <- tt[order(tt$adj.P.Val), ]
   fn <- file.path(outdir, sprintf("DE_%s_%s.csv", method, make.names(cn)))
   utils::write.csv(tt, fn, row.names = FALSE)
