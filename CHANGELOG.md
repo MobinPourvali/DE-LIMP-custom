@@ -5,6 +5,34 @@ All notable changes to DE-LIMP will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.0.1] — 2026-07-29
+
+### Fixed
+
+- **UniProt organism search returned nothing for every organism.**
+  `search_uniprot_proteomes()` sent `(<query>) AND (proteome_type:1)`; that
+  server-side filter now returns zero results from the UniProt API, so the
+  organism pickers on the DIA-NN search, DDA search, and Proteogenomics tabs came
+  back empty for *any* input. The filter is gone — proteome type is classified and
+  ranked client-side instead.
+- **"Non Reference proteome" was classified as a reference proteome.**
+  `grepl("Reference", ...)` matched the substring inside "Non Reference proteome",
+  so strain assemblies outranked the true reference — searching "baker's yeast"
+  put `UP000077179` above the real reference `UP000002311`, silently offering the
+  wrong database. Now an exact match on the proteome type.
+- **Searching a plain scientific name returned a different species.** UniProt's
+  `scientificName` carries a strain qualifier — `Saccharomyces cerevisiae (strain
+  ATCC 204508 / S288c)` — so "Saccharomyces cerevisiae" matched nothing exactly and
+  ranking fell through to protein count, putting *S. pastorianus* in row 1. The
+  bare species name is now matched with the strain qualifier stripped.
+- Proteome results are ranked: exact organism-name match first, then reference
+  proteomes, then by protein count; UniProt "Excluded" proteomes are dropped
+  unless nothing else matches.
+- **Added a "Type" column** to the UniProt results tables on the DIA-NN search, DDA
+  search, and Proteogenomics tabs. Results legitimately mix Reference and
+  strain-level proteomes; without it, a strain assembly was visually
+  indistinguishable from the reference and only row order hinted at the difference.
+
 ## [4.0.0] — 2026-06-17
 
 Major release. Merges the de novo + DDA work (the `feature/cascadia-denovo`

@@ -61,7 +61,8 @@ def tagged(value, source):
 
 
 # --- DIA-NN cfg --------------------------------------------------------------
-def build_diann(acq, instr_class, ms1, ms2, label, src, var_mods, overrides):
+def build_diann(acq, instr_class, ms1, ms2, label, src, var_mods, overrides,
+                cont_tag=None):
     UNIV = "universal trypsin/LFQ default"
     r = {}  # rationale
     lines = []
@@ -111,6 +112,14 @@ def build_diann(acq, instr_class, ms1, ms2, label, src, var_mods, overrides):
         add("--mass-acc", ms2, f"{label}: MS2 {ms2} ppm [{src}]")
         add("--mass-acc-ms1", ms1, f"{label}: MS1 {ms1} ppm [{src}]")
     add("--window", 0, "scan window auto-optimised per run (DIA-NN default)")
+
+    # Contaminants: identify them, but keep them out of quant + normalisation.
+    # The tag comes from fetch_fasta.py's sidecar so the cfg self-describes the
+    # database it was built for -- rather than us assuming contaminants are present.
+    if cont_tag:
+        add("--cont-quant-exclude", cont_tag,
+            f"contaminants ('{cont_tag}'-tagged) excluded from quant + normalisation "
+            f"(DIA-NN README --cont-quant-exclude)")
 
     # apply overrides (e.g. a validated SOP value) — re-render the file
     for k, v in (overrides or {}).items():
@@ -189,8 +198,19 @@ def main():
     ap.add_argument("--instrument", default="")
     ap.add_argument("--var-mods", default="", help="comma list, e.g. 'ox' to add Ox(M)")
     ap.add_argument("--overrides", default="", help="JSON of fields to force (validated SOP)")
+    ap.add_argument("--fasta-meta", default="",
+                    help="fetch_fasta.py's <fasta>.meta.json — supplies the contaminant "
+                         "tag so DIA-NN excludes contaminants from quant")
     ap.add_argument("--out", required=True)
     a = ap.parse_args()
+
+    cont_tag = None
+    if a.fasta_meta:
+        try:
+            with open(a.fasta_meta) as fh:
+                cont_tag = json.load(fh).get("diann_cont_quant_exclude")
+        except (OSError, json.JSONDecodeError) as e:
+            sys.exit(f"--fasta-meta could not be read: {e}")
 
     overrides = {}
     if a.overrides:
@@ -203,7 +223,8 @@ def main():
     var_mods = [v.strip().lower() for v in a.var_mods.split(",") if v.strip()]
 
     if a.engine == "diann":
-        text, rationale = build_diann(a.acquisition, cls, ms1, ms2, label, src, var_mods, overrides)
+        text, rationale = build_diann(a.acquisition, cls, ms1, ms2, label, src, var_mods,
+                                      overrides, cont_tag)
     else:
         text, rationale = build_sage(a.acquisition, cls, var_mods, overrides)
 

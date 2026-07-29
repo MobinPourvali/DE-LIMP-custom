@@ -133,7 +133,16 @@ def main():
     ap.add_argument("--out", default="methods.md")
     ap.add_argument("--lc-column", default=LC_COLUMN_DEFAULT)
     ap.add_argument("--de-dir", help="optional: de_provenance.json/methods.txt for a Data-processing paragraph")
+    ap.add_argument("--fasta-meta", help="fetch_fasta.py's <fasta>.meta.json — writes the "
+                                         "sequence-database sentence journals require")
     a = ap.parse_args()
+
+    fmeta = None
+    if a.fasta_meta:
+        try:
+            fmeta = json.load(open(a.fasta_meta))
+        except (OSError, json.JSONDecodeError) as e:
+            sys.exit(f"--fasta-meta could not be read: {e}")
 
     files = []
     for p in a.raw:
@@ -201,6 +210,66 @@ def main():
           f"spectrometer (Thermo Fisher Scientific) operated in [DDA/DIA — confirm] mode {DEF}. "
           "Full acquisition parameters (resolution, AGC, isolation width, NCE, gradient) should be "
           f"taken from the instrument method file {DEF}.")
+    w("")
+
+    # Sequence database — journals require source, release, entry count, and how
+    # contaminants were handled. Never invent these: if the sidecar wasn't passed,
+    # emit a blank tagged line rather than a plausible-looking default.
+    w("## Sequence database")
+    w("")
+    if fmeta:
+        content_phrase = {
+            "one_per_gene": "one canonical protein sequence per gene",
+            "reviewed": "reviewed (Swiss-Prot) entries only",
+            "reviewed_isoforms": "reviewed (Swiss-Prot) entries including splice isoforms",
+            "full": "all entries including unreviewed (TrEMBL)",
+            "full_isoforms": "all entries including unreviewed (TrEMBL) and splice isoforms",
+        }.get(fmeta.get("content_used"))
+        rel = f"release {rel}" if (rel := fmeta.get("uniprot_release")) else f"release ____ {DEF}"
+        n_p = fmeta.get("n_proteome")
+        n_p = f"{n_p:,}" if isinstance(n_p, int) else "____"
+        # Only call it a *reference* proteome when UniProt says it is one: a strain
+        # assembly ("Non Reference proteome") or a user-supplied file is not, and
+        # asserting otherwise puts a false claim in a published Methods section.
+        kind = ("reference proteome"
+                if (fmeta.get("proteome_type") or "").strip().lower() == "reference proteome"
+                else "proteome")
+        if content_phrase is None:
+            # 'unknown' (--path) / 'as_staged' (--hive): we did not build this database,
+            # so we cannot describe its composition. Leave it tagged for the user.
+            sent = (f"Spectra were searched against a supplied sequence database "
+                    f"({os.path.basename(fmeta.get('fasta', '') ) or '____'}; "
+                    f"{n_p} sequences). Database composition and version: ____ {DEF}.")
+        else:
+            sent = (f"Spectra were searched against the UniProt "
+                    f"{fmeta.get('organism') or '____'} {kind} "
+                    f"({fmeta.get('proteome') or '____'}, {rel}), comprising "
+                    f"{content_phrase} ({n_p} sequences).")
+        n_c = fmeta.get("n_contaminants_appended") or 0
+        n_already = fmeta.get("n_contaminants_already_present") or 0
+        if not n_c and n_already:
+            sent += (f" The database already included {n_already} common-contaminant "
+                     f"sequences")
+            sent += (" and these entries were excluded from quantification and "
+                     "normalisation." if fmeta.get("diann_cont_quant_exclude") else ".")
+        elif n_c:
+            sent += (f" A common-contaminant library ({n_c} sequences; "
+                     f"{fmeta.get('contaminant_set')} set of Frankenfield et al., "
+                     f"J Proteome Res 2022, 21:2104-2113) was appended")
+            sent += (" and these entries were excluded from quantification and "
+                     "normalisation."
+                     if fmeta.get("diann_cont_quant_exclude") else ".")
+        else:
+            sent += " No contaminant database was appended."
+        w(sent)
+        if fmeta.get("warnings"):
+            w("")
+            w(f"> Database build warnings (resolve before publication): "
+              f"{'; '.join(fmeta['warnings'])}")
+    else:
+        w(f"Spectra were searched against ____ {DEF} "
+          f"(run `fetch_fasta.py` and pass `--fasta-meta <fasta>.meta.json` to fill "
+          f"this in automatically).")
     w("")
 
     # optional data-processing paragraph from the skill's own run

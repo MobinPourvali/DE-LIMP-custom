@@ -25,6 +25,29 @@ self-describes) and #4 (no silent gaps — `MANIFEST.txt` logs `[OK]`/`[SKIPPED]
    workflow, re-resolves the engine, rebuilds the FASTA, and re-runs search + DE
    with identical arguments. `REPRODUCE.md` is the human-readable version.
 
+## The sequence database (`--fasta-info`)
+
+The database is the one input that can silently differ between a run and its
+"reproduction", so it is recorded explicitly rather than inferred. `fetch_fasta.py`
+writes `<fasta>.meta.json` — sha256, source URL, organism + taxid, proteome ID,
+database type (`content_used`), UniProt release, proteome vs contaminant sequence
+counts, contaminant set + citation, and any build warnings. **Always pass it as
+`provenance.py --fasta-info "$(cat search.fasta.meta.json)"`.**
+
+`reproduce.sh` then rebuilds the database from *what actually ran*, not from the
+workflow bundle's `fasta.uniprot_proteome`. This matters: the bundle holds the
+workflow **default**, but the user confirms the organism at step 3 and may have
+chosen a different one — regenerating from the bundle would reproduce a different
+database and quietly invalidate the comparison. Without `--fasta-info`,
+`reproduce.sh` falls back to the bundle and labels that step as not recorded.
+
+Re-running later uses the *current* UniProt release, so entry counts may drift by
+a few sequences. The recorded release and the FASTA sha256 in `checksums/` are
+what make that drift visible instead of invisible. The same facts feed
+`make_methods.py --fasta-meta` (the Methods "Sequence database" paragraph) and the
+re-analysis `DIFFERENCES.md`, so an organism or database-type change shows up as a
+difference rather than hiding behind an unchanged sequence count.
+
 ## What the orchestrator must do during the run
 
 - **Log every command.** Append each command you execute (verbatim, full args) to

@@ -42,17 +42,72 @@ result from "latest" is not reproducible.
 
 ## FASTA resolution (`fetch_fasta.py`)
 
-Priority, cheapest/most-trusted first:
-1. `fasta.path` override in the workflow → used verbatim (pre-staged proteome).
-2. **HIVE** (`--hive`): reuse `/quobyte/proteomics-grp/MRS/` proteomes +
-   contaminants instead of downloading.
-3. **UniProt**: stream the reference proteome for `fasta.uniprot_proteome`
-   (e.g. `UP000005640` = human), then append cRAP universal contaminants if
-   `add_contaminants` is set.
+### `resolve` — organism → proteome (always run this; never guess a UPID)
+`fetch_fasta.py resolve --organism "mouse"` (or `--taxid 10090`) returns ranked
+`candidates` + `selected` + `needs_menu`. Reference proteomes rank first;
+UniProt's "Excluded" proteomes are dropped unless nothing else matches. Show the
+user `selected` and confirm. When `needs_menu` is true, present the menu — "mouse"
+also matches *Myotis myotis* and mouse-ear cress.
 
-The script refuses to proceed if the resolved FASTA has 0 sequences, and warns
-(does not fail) if contaminants can't be fetched. Common proteome IDs:
-human `UP000005640`, mouse `UP000000589`, yeast `UP000002311`, E. coli `UP000000625`.
+Common IDs (still confirm with `resolve`): human `UP000005640`, mouse
+`UP000000589`, rat `UP000002494`, yeast `UP000002311`, E. coli `UP000000625`.
+
+### `fetch` — proteome → search FASTA
+Priority, cheapest/most-trusted first:
+1. `--path` override → used verbatim (pre-staged proteome).
+2. **HIVE** (`--hive`): reuse `/quobyte/proteomics-grp/MRS/`. Matches only files
+   whose name starts with the proteome ID and skips `*_plus_*contam*` /
+   `*decoy*` / `*predicted*` variants — appending contaminants to a database that
+   already contains them would duplicate them.
+3. **UniProt.**
+
+### Database type (`--content`, default `one_per_gene`)
+| value | what you get | human size |
+|---|---|---|
+| `one_per_gene` | canonical, one protein per gene — **the default** | 20,652 |
+| `reviewed` | Swiss-Prot only | ~20,400 |
+| `full` | + unreviewed TrEMBL | **147,506** |
+| `*_isoforms` | + splice isoforms | larger still |
+
+**`one_per_gene` only comes from the reference-proteome FTP tree**
+(`{Kingdom}/{UPID}/{UPID}_{TAXID}.fasta.gz`), because UniProt's REST
+`&onePerGene=true` is **silently ignored** — verified 2026-07-29: the yeast stream
+returns byte-identical output (6,067 entries) with and without it. A plain REST
+`(proteome:X)` stream is therefore always the *full* set. This is why DE-LIMP
+(`R/helpers_search.R`) uses FTP, and why the Core's staged HIVE database is
+`UP000005640_9606.fasta` = 20,663 sequences, not 147k.
+
+If no FTP file exists (non-reference proteome), the script warns loudly, records
+the warning in its output, and falls back to the REST full set — it never swaps
+databases silently. If REST also fails it exits with the reason.
+
+### Contaminants (`--contaminants`, default `universal`)
+Sets: `universal` (default; what the Core stages on HIVE), `cell_culture`,
+`mouse_tissue`, `rat_tissue`, `neuron_culture`, `stem_cell_culture`, `none`.
+Source order: `--contaminants-path` → HIVE (matching the *requested* set) →
+a DE-LIMP checkout's `contaminants/` → the Hao lab GitHub repo (public;
+Frankenfield et al. 2022, JPR 21(9):2104-2113, doi:10.1021/acs.jproteome.2c00145).
+
+Headers are `Cont_`-tagged, so DIA-NN's `--cont-quant-exclude Cont_` keeps them
+out of quantification and normalisation. The DIA-NN **Linux binary ships no
+contaminant FASTA of its own** (the GUI's "Contaminants" checkbox is a
+Windows-side asset), so they must be appended here. `fetch_fasta.py` reports the
+tag as `diann_cont_quant_exclude`; pass the sidecar to `estimate_params.py
+--fasta-meta` and the flag lands in the cfg automatically.
+
+**A failure to fetch contaminants is fatal, not a warning** — the GPM cRAP URL
+this script used previously now 404s, and the old warn-and-continue behaviour
+meant searches silently ran with no contaminants at all, which also made the
+contaminant-dominance QC check meaningless. Override deliberately with
+`--contaminants none` or `--allow-missing-contaminants`.
+
+### Output
+Refuses to proceed on 0 sequences, and warns if a full-set download comes back
+>5% short of UniProt's declared count (truncated stream). Writes
+`<out>.meta.json` alongside the FASTA — sha256, source URL, organism, taxid,
+content type, UniProt release, per-part sequence counts, contaminant set +
+citation, and any warnings. Pass it to `provenance.py --fasta-info` so
+`reproduce.sh` rebuilds the database that was *actually searched*.
 
 ## SLURM submission (hpc)
 

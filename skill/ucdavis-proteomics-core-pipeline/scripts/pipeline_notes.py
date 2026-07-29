@@ -80,7 +80,8 @@ FACTS = [
      "Nesvizhskii 2010, J Proteomics 73:2092-2123", ("step5", "de")),
     ("Keratin is the classic contaminant — skin, hair and dust find their way into almost "
      "every sample. It is only a problem when it is unevenly distributed across your groups.",
-     "cRAP contaminant database, thegpm.org/crap/", None),
+     "Frankenfield et al. 2022, J Proteome Res 21:2104-2113 (the contaminant "
+     "library appended to the search)", None),
     ("The moderated t-test used here borrows variance information across all proteins, which "
      "is what makes small-replicate experiments analysable at all.",
      "Smyth 2004, Stat Appl Genet Mol Biol 3:Article3", ("de",)),

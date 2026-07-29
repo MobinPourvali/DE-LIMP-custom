@@ -10,9 +10,12 @@
 #' @param query Character string — organism common or scientific name
 #' @return data.frame with proteome ID, organism, protein count, type
 search_uniprot_proteomes <- function(query) {
+  # NOTE: the server-side filter `AND (proteome_type:1)` returns ZERO results
+  # against the current UniProt API (verified 2026-07-29) — it silently made every
+  # organism look unavailable. Filter and rank on proteomeType client-side instead.
   url <- paste0(
     "https://rest.uniprot.org/proteomes/search?",
-    "query=", utils::URLencode(paste0("(", query, ") AND (proteome_type:1)")),
+    "query=", utils::URLencode(query),
     "&format=json",
     "&fields=upid,organism,organism_id,protein_count",
     "&size=25"
@@ -35,7 +38,7 @@ search_uniprot_proteomes <- function(query) {
       ))
     }
 
-    data.frame(
+    df <- data.frame(
       upid = vapply(data$results, function(r) r$id %||% "", character(1)),
       organism = vapply(data$results, function(r) {
         r$taxonomy$scientificName %||% ""
@@ -49,12 +52,35 @@ search_uniprot_proteomes <- function(query) {
       protein_count = vapply(data$results, function(r) {
         as.integer(r$proteinCount %||% 0L)
       }, integer(1)),
+      # Exact match, NOT grepl("Reference", ...): UniProt's "Non Reference proteome"
+      # CONTAINS "Reference", so a substring test labels strain assemblies as
+      # reference proteomes — "baker's yeast" then ranks UP000077179 above the real
+      # reference UP000002311, and the user searches against the wrong database.
       proteome_type = vapply(data$results, function(r) {
-        pt <- r$proteomeType %||% ""
-        if (grepl("Reference", pt, ignore.case = TRUE)) "Reference" else "Other"
+        pt <- trimws(tolower(r$proteomeType %||% ""))
+        if (identical(pt, "reference proteome")) "Reference"
+        else if (identical(pt, "excluded")) "Excluded"
+        else "Other"
       }, character(1)),
       stringsAsFactors = FALSE
     )
+
+    # Drop UniProt's "Excluded" (redundant/low-quality) proteomes unless they are all
+    # we have. Then rank: exact name match first, then reference, then larger.
+    keep <- df[df$proteome_type != "Excluded", , drop = FALSE]
+    if (nrow(keep) == 0L) keep <- df
+    # Match the bare species name too: scientificName carries a strain qualifier
+    # ("Saccharomyces cerevisiae (strain ATCC 204508 / S288c)"), so a user typing the
+    # plain scientific name matches nothing and the sort falls through to protein
+    # count — which ranked S. pastorianus above the real S. cerevisiae reference.
+    q_norm <- tolower(trimws(query))
+    org_base <- tolower(trimws(gsub("\\s*\\([^)]*\\)", " ", keep$organism)))
+    org_base <- gsub("\\s+", " ", org_base)
+    exact <- tolower(trimws(keep$common_name)) == q_norm |
+             tolower(trimws(keep$organism))    == q_norm |
+             org_base                          == q_norm
+    keep[order(!exact, keep$proteome_type != "Reference", -keep$protein_count), ,
+         drop = FALSE]
   }, error = function(e) {
     message(sprintf("[DE-LIMP Search] UniProt proteome search failed: %s", e$message))
     data.frame(

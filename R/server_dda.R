@@ -308,8 +308,10 @@ server_dda <- function(input, output, session, values, add_to_log) {
   # UniProt results table
   output$dda_uniprot_results_table <- DT::renderDT({
     req(values$dda_uniprot_results, nrow(values$dda_uniprot_results) > 0)
-    display_df <- values$dda_uniprot_results[, c("upid", "organism", "common_name", "protein_count")]
-    colnames(display_df) <- c("ID", "Organism", "Common Name", "Proteins")
+    # Type column: results mix Reference and strain-level proteomes — see server_search.R.
+    display_df <- values$dda_uniprot_results[, c("upid", "organism", "common_name",
+                                                 "protein_count", "proteome_type")]
+    colnames(display_df) <- c("ID", "Organism", "Common Name", "Proteins", "Type")
     DT::datatable(display_df,
       selection = "single",
       options = list(pageLength = 10, dom = "tip", scrollY = "300px",
