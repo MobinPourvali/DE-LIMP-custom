@@ -644,6 +644,14 @@ python3 scripts/make_comparison_report.py --out <session>/output/comparison_repo
   --instrument "<detected instrument>" --title "<A> vs <B>"
 python3 scripts/to_docx.py --in <...>/COMPARISON_REPORT.md --out <...>/COMPARISON_REPORT.docx
 ```
+**Read `references/cross-tool-comparison.md` BEFORE interpreting the output** — it holds
+the design rules (both engines through the same DE pipeline; name every uncontrolled
+difference) and the interpretation patterns a bake-off keeps producing: more precursors
+with fewer proteins means protein *inference*, not sensitivity; a high intensity r with a
+much lower logFC r means direction is trustworthy and magnitude is not; and the subtler
+the contrast, the more the engine choice decides the answer. It also says to **load the
+`dataviz` skill and re-run its palette validator** before changing any chart.
+
 It emits an **interactive standalone HTML** (metric toggles, hover tooltips, a 3x3
 concordance matrix, sortable tables, theme-aware, no CDN) plus a markdown skeleton in
 the section order DE-LIMP's Run Comparator prompt defines — `docs/AI_PROMPTS.md` §1:
