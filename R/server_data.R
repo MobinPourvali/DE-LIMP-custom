@@ -13,7 +13,8 @@ server_data <- function(input, output, session, values, add_to_log, is_hf_space)
   # values$raw_data$genes after limpa::readDIANN(). The classifier reads
   # Protein.Group accession structure as its primary signal and (when the
   # FASTA used in the search is available at values$proteog_active_fasta)
-  # refines REF → NOVEL_ISOFORM via the FASTA's source= tags.
+  # lets the FASTA's source= tag override it — the accession alone cannot tell a
+  # novel gene from a novel isoform of a known gene (both get an MSTRG.*.pN ID).
   # ----------------------------------------------------------------------------
   classify_loaded_proteins <- function() {
     if (is.null(values$raw_data) || !exists("classify_proteins")) return(invisible())

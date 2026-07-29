@@ -67,7 +67,25 @@ test_that("count_proteog_classes against May 20 validation FASTA (integration)",
 # classify_proteins() — DIA-NN report → classification data.frame
 # =============================================================================
 
-test_that("classify_proteins extracts source/orf_type/parent_gene from descriptions", {
+# The `source=` / `ORF_type=` / `parent_gene=` tags live in the FASTA headers, not in
+# the DIA-NN report — so classify_proteins() reads them from `fasta_path`, exactly as
+# production does (server_data.R passes values$proteog_active_fasta). Write a temp
+# FASTA carrying the same tags rather than expecting the report to carry them.
+.write_test_fasta <- function(headers) {
+  p <- tempfile(fileext = ".fasta")
+  writeLines(as.vector(rbind(paste0(">", headers), "MPEPTIDEK")), p)
+  p
+}
+
+test_that("classify_proteins extracts source/orf_type/parent_gene from the FASTA", {
+  fasta <- .write_test_fasta(c(
+    "sp|P12345|GAPDH_HUMAN GAPDH_HUMAN OS=Homo sapiens",
+    "sp|ENSMUST00000000001.5.p1|Gnai3_MM39TEST source=REF ORF_type=complete strand=+ len=354 parent_gene=ENSMUSG00000000001.5 transcript=ENSMUST00000000001.5",
+    "sp|MSTRG.10029.5.p2|MSTRG.10029_MM39TEST source=NOVEL_GENE ORF_type=5prime_partial parent_gene=MSTRG.10029 transcript=MSTRG.10029.5",
+    "sp|MSTRG.10075.2.p1|Trim25_MM39TEST source=NOVEL_ISOFORM ORF_type=complete parent_gene=ENSMUSG00000005951 transcript=MSTRG.10075.2"
+  ))
+  on.exit(unlink(fasta), add = TRUE)
+
   fake_genes <- data.frame(
     Protein.Group = c(
       "sp|P12345|GAPDH_HUMAN",
@@ -85,12 +103,16 @@ test_that("classify_proteins extracts source/orf_type/parent_gene from descripti
     ),
     stringsAsFactors = FALSE
   )
-  classification <- classify_proteins(fake_genes)
+  classification <- classify_proteins(fake_genes, fasta_path = fasta)
   expect_equal(nrow(classification), 5)
   expect_equal(classification$source[1], "UNIPROT")
   expect_equal(classification$source[2], "REF")
   expect_equal(classification$source[3], "NOVEL_GENE")
+  # The whole point of trusting the FASTA: this accession is MSTRG.*.pN, so
+  # structure alone says NOVEL_GENE. The FASTA knows it is a novel ISOFORM of a
+  # known gene (parent_gene=ENSMUSG...) and must win.
   expect_equal(classification$source[4], "NOVEL_ISOFORM")
+  expect_equal(classification$parent_gene[4], "ENSMUSG00000005951")
   expect_equal(classification$source[5], "VARIANT")
   expect_equal(classification$orf_type[2], "complete")
   expect_equal(classification$orf_type[3], "5prime_partial")
@@ -98,14 +120,44 @@ test_that("classify_proteins extracts source/orf_type/parent_gene from descripti
   expect_equal(classification$parent_gene[3], "MSTRG.10029")
 })
 
+test_that("classify_proteins falls back to accession structure with no FASTA", {
+  # No fasta_path (a non-proteogenomics run): source still classifies structurally,
+  # and the FASTA-only columns are NA rather than invented.
+  cls <- classify_proteins(data.frame(
+    Protein.Group = c("sp|P12345|GAPDH_HUMAN", "sp|MSTRG.10075.2.p1|Trim25_MM39TEST"),
+    stringsAsFactors = FALSE))
+  expect_equal(cls$source, c("UNIPROT", "NOVEL_GENE"))
+  expect_true(all(is.na(cls$orf_type)))
+  expect_true(all(is.na(cls$parent_gene)))
+})
+
+test_that("classify_proteins keeps source and parent_gene on the same member", {
+  # A ;-joined group: the class must come from the winning member and parent_gene
+  # must describe THAT member, not whichever happened to be tagged first.
+  fasta <- .write_test_fasta(c(
+    "sp|ENSMUST00000000001.5.p1|A source=REF ORF_type=complete parent_gene=ENSMUSG_REF",
+    "sp|MSTRG.10075.2.p1|B source=NOVEL_ISOFORM ORF_type=complete parent_gene=ENSMUSG_ISO"
+  ))
+  on.exit(unlink(fasta), add = TRUE)
+  cls <- classify_proteins(data.frame(
+    Protein.Group = "sp|ENSMUST00000000001.5.p1|A;sp|MSTRG.10075.2.p1|B",
+    stringsAsFactors = FALSE), fasta_path = fasta)
+  expect_equal(cls$source, "NOVEL_ISOFORM")
+  expect_equal(cls$parent_gene, "ENSMUSG_ISO")
+})
+
 test_that("classify_proteins accepts EList-like input with $genes slot", {
+  # This is about the input SHAPE ($genes slot). The class comes from the FASTA tag,
+  # as it does in production — bare accession "A" has no structure to classify.
+  fasta <- .write_test_fasta("sp|A|B B source=REF ORF_type=complete parent_gene=G")
+  on.exit(unlink(fasta), add = TRUE)
   elist <- list(genes = data.frame(
     Protein.Group = c("sp|A|B"),
-    Protein.Group.Description = c("B source=REF ORF_type=complete parent_gene=G transcript=T"),
     stringsAsFactors = FALSE
   ))
-  classification <- classify_proteins(elist)
+  classification <- classify_proteins(elist, fasta_path = fasta)
   expect_equal(classification$source, "REF")
+  expect_equal(classification$parent_gene, "G")
 })
 
 test_that("classify_proteins returns empty df on NULL or no Protein.Group column", {
