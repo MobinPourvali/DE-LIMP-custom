@@ -346,7 +346,17 @@ python3 scripts/run_search.py --tools ~/.proteomics-pipeline/tools/tools.json \
   - FragPipe 24.0 bundles **DIA-NN 1.8.2_beta_8**, older than the 2.x the `diann_*`
     workflows pin. Expect different numbers from that alone; say so rather than
     attributing every difference to the spectrum-centric approach.
-  - **Four things block this route on a fresh account — read `references/fragpipe-diatracer.md`\n    BEFORE running it.** (1) the three engines are licence-gated and the tools folder must be the\n    one that also contains `speclib/`; (2) MSFragger needs a **target+decoy** FASTA, which DIA-NN\n    does not; (3) headless FragPipe rejects the spectral-library module until\n    `fragpipe-config.bin-python` exists in `~/.config/FragPipe/.../fragpipe-ui.cache` — no CLI flag\n    substitutes, run `scripts/fragpipe_bootstrap.py`; (4) diaTracer's standalone `main()` ignores its\n    own documented defaults and needs all seven numeric options passed.\n  - **On a cluster, parallelise the conversion automatically** with `scripts/diatracer_parallel.py`\n    — one SLURM task per file instead of FragPipe's serial loop. Measured 9 files in ~25 min vs ~3 h.\n    Re-stage afterwards so the manifest takes the reuse form and FragPipe skips conversion.\n  - Budget roughly **20 min per file for the diaTracer conversion alone** (paper: 34 files,
+  - **Four things block this route on a fresh account — read `references/fragpipe-diatracer.md`
+    BEFORE running it.** (1) the three engines are licence-gated and the tools folder must be the
+    one that also contains `speclib/`; (2) MSFragger needs a **target+decoy** FASTA, which DIA-NN
+    does not; (3) headless FragPipe rejects the spectral-library module until
+    `fragpipe-config.bin-python` exists in `~/.config/FragPipe/.../fragpipe-ui.cache` — no CLI flag
+    substitutes, run `scripts/fragpipe_bootstrap.py`; (4) diaTracer's standalone `main()` ignores its
+    own documented defaults and needs all seven numeric options passed.
+  - **On a cluster, parallelise the conversion automatically** with `scripts/diatracer_parallel.py`
+    — one SLURM task per file instead of FragPipe's serial loop. Measured 9 files in ~25 min vs ~3 h.
+    Re-stage afterwards so the manifest takes the reuse form and FragPipe skips conversion.
+  - Budget roughly **20 min per file for the diaTracer conversion alone** (paper: 34 files,
     32 cores, ~19.4 min each), before MSFragger and DIA-NN. The mzML are **reusable**, so a
     re-search with different parameters skips it. Needs Java 11+, MSFragger 4.4+,
     IonQuant 1.11.18+, diaTracer 2.2.1+. The three gated jars are **not** in the FragPipe
