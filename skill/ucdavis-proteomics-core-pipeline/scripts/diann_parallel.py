@@ -273,6 +273,21 @@ def main():
         'jid5=$(sbatch --parsable --dependency=afterok:$jid4 %s)' % s5,
         'echo "submitted: firstpass=$jid2 assembly=$jid3 finalpass=$jid4 report=$jid5"',
         f'echo "final report will be {D}/{report}; watch with: watch_run.sh --slurm $jid5 --log {D}/s5_report_${{jid5}}.log"']
+
+    # Record the submission so a disconnected session can pick the run back up.
+    # SLURM keeps the jobs alive after the user closes their terminal; without this
+    # the next session has no idea what was submitted or what is still outstanding.
+    # <out> is normally <session>/output/search, so the session is two levels up.
+    sess = os.path.dirname(os.path.dirname(out))
+    ck = os.path.join(os.path.dirname(os.path.abspath(__file__)), "checkpoint.py")
+    jobs = '$jid2,$jid3,$jid4,$jid5' if seed else '$jid1,$jid2,$jid3,$jid4,$jid5'
+    sub_lines += [
+        f'python3 "{ck}" record --session "{sess}" --stage search \\',
+        f'  --jobs "{jobs}" --desc "DIA-NN 5-step parallel chain ({n} files)" \\',
+        f'  --report "{D}/{report}" --watch-job "$jid5" --watch-log "{D}/s5_report_${{jid5}}.log" \\',
+        f'  --next "Rscript run_de.R --input {D}/{report} --metadata {sess}/input/conditions.csv --method dpc --outdir {sess}/output/tables" \\',
+        '  >/dev/null 2>&1 || true',
+        f'echo "recovery notes written to {sess}/RECOVERY.md — you can safely close your terminal"']
     write("submit.sh", "\n".join(sub_lines))
 
     import json
