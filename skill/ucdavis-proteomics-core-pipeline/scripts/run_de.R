@@ -271,5 +271,68 @@ prov <- list(
 )
 writeLines(jsonlite_or_manual(prov), file.path(outdir, "de_provenance.json"))
 
+# ---- detected vs inferred QC ------------------------------------------------
+# DPC models missing precursors rather than leaving holes, so the protein matrix
+# is complete BY CONSTRUCTION. Counting non-missing cells therefore reports the
+# same number for every sample and hides real depth differences. The meaningful
+# split is detected (>=1 precursor actually observed in that run) vs inferred
+# (value supplied by the detection-probability model) — the same view DE-LIMP's
+# Data Completeness panel shows.
+qc_di <- NULL
+if (method == "dpc" && exists("dat") && exists("y_protein")) {
+  tryCatch({
+    prot <- as.character(dat$genes[["Protein.Group"]])
+    if (is.null(prot) || !length(prot)) prot <- rownames(dat$E)
+    detm <- rowsum((!is.na(dat$E)) * 1, group = prot, reorder = TRUE) > 0
+    ii   <- match(rownames(E), rownames(detm))
+    det  <- matrix(FALSE, nrow(E), ncol(E), dimnames = list(rownames(E), colnames(E)))
+    ok   <- !is.na(ii)
+    det[ok, ] <- as.matrix(detm)[ii[ok], , drop = FALSE]
+
+    qc_di <- data.frame(
+      Sample   = colnames(E),
+      Group    = if (exists("groups")) as.character(groups) else NA_character_,
+      Detected = colSums(det),
+      Inferred = nrow(E) - colSums(det),
+      Total    = nrow(E),
+      stringsAsFactors = FALSE
+    )
+    qc_di$PctDetected <- round(100 * qc_di$Detected / qc_di$Total, 1)
+    qc_di$PctInferred <- round(100 * qc_di$Inferred / qc_di$Total, 1)
+    qc_di <- qc_di[order(-qc_di$Detected), ]
+    utils::write.csv(qc_di, file.path(outdir, "QC_detected_vs_inferred.csv"), row.names = FALSE)
+    message(sprintf("[run_de] QC_detected_vs_inferred.csv: %.0f%%-%.0f%% detected across samples",
+                    min(qc_di$PctDetected), max(qc_di$PctDetected)))
+  }, error = function(e) message("[run_de] detected/inferred QC skipped: ", e$message))
+}
+
+# ---- DE-LIMP-loadable session ----------------------------------------------
+# Everything the DE-LIMP Shiny app needs is already in memory here. Writing it in
+# server_session.R's schema lets any result be dropped straight into the GUI at
+# https://delimp.stan-proteomics.org/ for interactive exploration.
+if (method == "dpc" && exists("dat") && exists("y_protein")) {
+  tryCatch({
+    session_data <- list(
+      raw_data     = dat,
+      metadata     = meta,
+      fit          = fit,
+      y_protein    = y_protein,
+      dpc_fit      = if (exists("dpcfit")) dpcfit else NULL,
+      design       = design,
+      qc_stats     = list(detected_vs_inferred = qc_di),
+      repro_log    = NULL,
+      contrast     = paste(forms, collapse = ","),
+      logfc_cutoff = logfc_thr,
+      q_cutoff     = adjp_thr,
+      saved_at     = Sys.time(),
+      app_version  = "DE-LIMP v2.5"
+    )
+    rds <- file.path(outdir, "DE-LIMP_session.rds")
+    saveRDS(session_data, rds)
+    message(sprintf("[run_de] DE-LIMP_session.rds (%.1f MB) — load at https://delimp.stan-proteomics.org/",
+                    file.size(rds) / 1e6))
+  }, error = function(e) message("[run_de] DE-LIMP session not written: ", e$message))
+}
+
 message("\n[run_de] done. Results + provenance (methods.txt, sessionInfo.txt, de_provenance.json) in ",
         normalizePath(outdir))

@@ -20,9 +20,16 @@ def via_pandoc(md_path, out_path):
     pandoc = shutil.which("pandoc")
     if not pandoc:
         return False
+    # Figures are referenced relatively (e.g. figures/pca.png). Without a resource
+    # path pandoc silently drops them, producing a text-only .docx. Resolve against
+    # the markdown's own directory and its figures/ subdirectory.
+    base = os.path.dirname(os.path.abspath(md_path)) or "."
+    rpath = os.pathsep.join([base, os.path.join(base, "figures")])
     try:
         subprocess.run([pandoc, md_path, "-o", out_path, "--from", "gfm",
-                        "--standalone"], check=True, capture_output=True, text=True)
+                        "--standalone", "--toc", "--toc-depth=2",
+                        "--number-sections", f"--resource-path={rpath}"],
+                       check=True, capture_output=True, text=True)
         return os.path.exists(out_path)
     except subprocess.CalledProcessError as e:
         sys.stderr.write(f"[to_docx] pandoc failed ({e.stderr.strip()[:200]}); using fallback\n")
