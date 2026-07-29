@@ -155,16 +155,23 @@ if (file.exists(em_path)) {
     } else pick <- head(pick[order(match(pick, rownames(Mi)))], top_n)
     H <- Mi[pick, , drop = FALSE]
     lab <- gene_label(em[match(rownames(H), em$Protein.Group), , drop = FALSE])
-    rownames(H) <- make.unique(ifelse(is.na(lab), rownames(H), lab))
+    lab <- ifelse(is.na(lab), rownames(H), lab)
+    # Semicolon-joined protein groups (e.g. "H2ac12;H2ac13;H2ac15;...") overflow the
+    # device and clip the title and sample columns. Keep the first symbol, cap length.
+    lab <- vapply(strsplit(lab, ";"), function(x) x[1], character(1))
+    lab <- ifelse(nchar(lab) > 16, paste0(substr(lab, 1, 15), "~"), lab)
+    rownames(H) <- make.unique(lab)
     fn <- file.path(outdir, "heatmap_top.png")
     ann <- if (!is.null(grp)) data.frame(Group = grp, row.names = colnames(H)) else NA
     if (has_pheat) {
-      grDevices::png(fn, width = 1700, height = 2200, res = 200)
+      # pheatmap manages its own device; passing filename= avoids the clipped output
+      # produced by wrapping it in png()/dev.off().
       pheatmap::pheatmap(H, scale = "row", annotation_col = ann,
                          show_rownames = nrow(H) <= 60, show_colnames = TRUE,
+                         fontsize_row = 8, fontsize_col = 9,
                          main = sprintf("Top %d differential proteins (row z-score)", nrow(H)),
-                         color = grDevices::colorRampPalette(c("#4393c3", "white", "#d6604d"))(100))
-      grDevices::dev.off()
+                         color = grDevices::colorRampPalette(c("#4393c3", "white", "#d6604d"))(100),
+                         width = 11, height = 11, filename = fn)
     } else {  # base-R fallback heatmap
       grDevices::png(fn, width = 1700, height = 2200, res = 200)
       stats::heatmap(t(scale(t(H))), col = grDevices::colorRampPalette(c("#4393c3","white","#d6604d"))(100),
