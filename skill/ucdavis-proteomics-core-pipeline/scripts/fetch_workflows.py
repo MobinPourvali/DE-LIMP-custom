@@ -115,7 +115,11 @@ def do_match(args):
     selected = scored[0] if scored else None
     top = scored[0]["score"] if scored else None
     tie = len(scored) > 1 and scored[0]["score"] == scored[1]["score"]
-    needs_menu = (len(scored) == 0) or tie or (top == 0)
+    # A workflow with no validation date has never been run against facility data. It may
+    # still be the right choice, but it must never become a silent default just because it
+    # was the only thing that matched -- the user has to opt into it knowingly.
+    unvalidated = bool(selected) and not (selected.get("validated") or {}).get("date")
+    needs_menu = (len(scored) == 0) or tie or (top == 0) or unvalidated
 
     out = {
         "query": {"acquisition": acq, "organism_taxid": taxid, "instrument": instrument},
@@ -123,11 +127,15 @@ def do_match(args):
         "selected": selected,
         "candidates": scored,
         "needs_menu": needs_menu,
+        "unvalidated": unvalidated,
         "reason": (
             "no validated workflow matches this acquisition+organism — add one to the registry"
             if not scored else
             "tie at the top score — ask the user which instrument/SOP applies" if tie else
             "no instrument info — confirm the auto-pick with the user" if top == 0 else
+            "the best match has NOT been validated on facility data — present it as a choice, "
+            "say plainly that it is unvalidated, and note any licence restriction before running"
+            if unvalidated else
             "confident auto-pick — still confirm with the user before a multi-hour search"
         ),
     }

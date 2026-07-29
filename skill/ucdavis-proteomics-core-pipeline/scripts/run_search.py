@@ -334,9 +334,31 @@ def run_fragpipe(cmd, bundle, params, files, fasta, out, threads, sbatch):
     acq = bundle.get("acquisition", "DDA").upper()
     manifest = os.path.join(out, "fragpipe.fp-manifest")
     dtype = "DIA" if acq == "DIA" else "DDA"
-    with open(manifest, "w") as fh:
-        for f in files:
-            fh.write(f"{os.path.abspath(f)}\t\t\t{dtype}\n")
+
+    if acq == "DIA" and any(f.rstrip("/").endswith(".d") for f in files):
+        # diaTracer writes its pseudo-MS/MS mzML NEXT TO THE INPUT, so pointing it at the
+        # shared raw files would have two users racing to write the same output (and would
+        # fail outright on a read-only share). Stage per-user symlinks instead: FragPipe
+        # normalizes but does not resolve them, so the output lands in our own directory.
+        # The stager also reuses any conversion that already exists.
+        stage = os.path.join(out, "diatracer_stage")
+        res = subprocess.run(
+            [sys.executable,
+             os.path.join(os.path.dirname(os.path.abspath(__file__)), "diatracer_stage.py"),
+             "--raw", *files, "--stage", stage, "--manifest", manifest],
+            capture_output=True, text=True)
+        if res.returncode != 0:
+            sys.stderr.write(res.stderr)
+            sys.exit("diatracer_stage.py failed — cannot build a safe FragPipe manifest.")
+        info = json.loads(res.stdout)
+        print(f"  [diatracer] staged {info['n_files']} file(s): "
+              f"{info['n_to_convert']} to convert, {info['n_reused']} reused -> {stage}")
+        for n in info.get("notes", []):
+            print(f"  [diatracer] {n}")
+    else:
+        with open(manifest, "w") as fh:
+            for f in files:
+                fh.write(f"{os.path.abspath(f)}\t\t\t{dtype}\n")
     tools = os.environ.get("FRAGPIPE_TOOLS_FOLDER", "")
     tools_arg = f"--config-tools-folder {shlex.quote(tools)}" if tools else ""
     full = (f"{cmd} --headless --workflow {shlex.quote(params)} "
@@ -349,7 +371,81 @@ def run_fragpipe(cmd, bundle, params, files, fasta, out, threads, sbatch):
     return {"engine": "fragpipe", "report": report, "ran": True}
 
 
+def adapt_fragpipe_dia(out):
+    """FragPipe's DIA route (diaTracer -> MSFragger -> DIA-NN) writes DIA-NN's own
+    output to <workdir>/dia-quant-output/ (report.parquet + report.tsv +
+    report.stats.tsv -- verified in FragPipe 24.0 CmdDiann.java). report.parquet is
+    ALREADY the DE contract, so prefer it and only fall back to converting the TSV.
+    Returns None if this doesn't look like a DIA run, so the caller can try DDA."""
+    # Look for the file INSIDE dia-quant-output specifically. A plain _find() would also
+    # match the report.parquet this function itself writes into <out> on an earlier run,
+    # whose parent is <out> rather than dia-quant-output -- so the DIA branch would miss
+    # and needlessly re-convert the TSV every time.
+    def in_dia_out(name):
+        for root, dirs, files in os.walk(out):
+            if os.path.basename(root) == "dia-quant-output" and name in files:
+                return os.path.join(root, name)
+        return None
+
+    pq_path = in_dia_out("report.parquet")
+    if pq_path:
+        print(f"  [adapt] FragPipe DIA: DIA-NN output already meets the contract -> {pq_path}")
+        return pq_path
+    tsv = in_dia_out("report.tsv")
+    if not tsv:
+        return None
+    try:
+        import pyarrow as pa, pyarrow.parquet as pq
+    except ImportError:
+        sys.exit("pyarrow required to adapt FragPipe DIA output.")
+    import csv
+    with open(tsv, newline="") as fh:
+        rows = list(csv.DictReader(fh, delimiter="\t"))
+    if not rows:
+        sys.exit(f"{tsv} is empty — DIA-NN produced no quantification.")
+    def num(v):
+        try:
+            return float(v)
+        except (TypeError, ValueError):
+            return float("nan")
+    cols = {c.lower(): c for c in rows[0]}
+    def col(*names):
+        for n in names:
+            if n.lower() in cols:
+                return cols[n.lower()]
+        return None
+    c_run, c_pg, c_q = col("Run"), col("Protein.Group"), col("PG.MaxLFQ", "PG.Quantity")
+    if not all([c_run, c_pg, c_q]):
+        sys.exit(f"{tsv} lacks Run / Protein.Group / PG.MaxLFQ — cannot build the DE contract.")
+    # Carry the q-value columns through when present; the DE step filters on them.
+    cq, clq, clpq = col("Q.Value"), col("Lib.Q.Value"), col("Lib.PG.Q.Value")
+    n = len(rows)
+    tbl = pa.table({
+        "Run": [r[c_run] for r in rows],
+        "Protein.Group": [r[c_pg] for r in rows],
+        "PG.MaxLFQ": [num(r[c_q]) for r in rows],
+        "Q.Value": [num(r[cq]) if cq else 0.0 for r in rows],
+        "Lib.Q.Value": [num(r[clq]) if clq else 0.0 for r in rows],
+        "Lib.PG.Q.Value": [num(r[clpq]) if clpq else 0.0 for r in rows],
+    })
+    report = os.path.join(out, "report.parquet")
+    pq.write_table(tbl, report)
+    print(f"  [adapt] FragPipe DIA: {os.path.basename(tsv)} -> {report}  ({n} rows)")
+    return report
+
+
 def adapt_fragpipe(out):
+    """FragPipe -> DIA-NN-shaped report.parquet. Tries the DIA route first (diaTracer
+    leaves DIA-NN output in dia-quant-output/), then the DDA route (IonQuant's
+    combined_protein.tsv). The two produce different files, so which one exists is
+    what tells us which route ran."""
+    dia = adapt_fragpipe_dia(out)
+    if dia:
+        return dia
+    return adapt_fragpipe_dda(out)
+
+
+def adapt_fragpipe_dda(out):
     """combined_protein.tsv (IonQuant MaxLFQ) -> DIA-NN-shaped report.parquet."""
     try:
         import pyarrow as pa, pyarrow.parquet as pq
@@ -358,7 +454,9 @@ def adapt_fragpipe(out):
     import csv
     cp = _find(out, ["combined_protein.tsv"])
     if not cp:
-        sys.exit(f"No combined_protein.tsv under {out}.")
+        sys.exit(f"No FragPipe output found under {out}: neither dia-quant-output/report.* "
+                 "(the diaTracer DIA route) nor combined_protein.tsv (the IonQuant DDA "
+                 "route). Check the FragPipe log — a headless run can exit 0 on a crash.")
     with open(cp, newline="") as fh:
         rows = list(csv.DictReader(fh, delimiter="\t"))
     if not rows:
