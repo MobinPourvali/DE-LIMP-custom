@@ -5,6 +5,31 @@ All notable changes to DE-LIMP will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.0.2] — 2026-07-29
+
+### Fixed
+
+- **Novel isoforms of known genes were classified as novel genes.**
+  `classify_proteins()` guessed a protein's class from its accession structure and
+  only accepted the FASTA's `source=` tag when the guess was exactly `REF`. But a
+  StringTie-assembled novel *isoform* of a known gene carries an `MSTRG.*.pN`
+  transcript ID — structurally identical to a novel *gene* — so it was classified
+  `NOVEL_GENE` and could never reach the `NOVEL_ISOFORM` upgrade. Every such
+  protein was miscounted, inflating novel-gene counts in the proteogenomics
+  summary, the AI prompt, and the exported classification table.
+
+  The FASTA's `source=` tag is now authoritative wherever it exists, resolved per
+  group member and then reduced by class precedence. The tag is written by the
+  assembly pipeline, which knows the Ensembl `parent_gene`; the accession is only
+  a structural guess. Without a FASTA, behaviour is unchanged (structure only,
+  with `orf_type`/`parent_gene` left `NA` rather than invented).
+- `orf_type` and `parent_gene` are now taken from the group member that
+  *determined* the class, so all three columns describe the same protein.
+  Previously they came from the first FASTA-tagged member, which could pair one
+  member's `source` with another member's `parent_gene`.
+- Class precedence lives in one constant (`.CLASS_PRECEDENCE`) shared by both
+  classifiers instead of being spelled out twice.
+
 ## [4.0.1] — 2026-07-29
 
 ### Fixed

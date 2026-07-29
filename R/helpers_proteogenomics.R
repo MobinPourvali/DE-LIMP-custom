@@ -53,22 +53,32 @@ if (!exists("%||%")) {
 #' was verified on the May 22 smoke test against an assembled proteogenomics
 #' FASTA). The accession structure is preserved unchanged and lets us tell:
 #'   - `^(INDEL|SNV)_ENSP*`                  → VARIANT (Phase 3 output)
-#'   - `MSTRG.<num>.<num>.p<num>` anywhere   → NOVEL_GENE
-#'   - `ENSMUST<num>(.<num>)?.p<num>`        → REF (may upgrade to NOVEL_ISOFORM
-#'                                             when a fasta_path is provided)
+#'   - `MSTRG.<num>.<num>.p<num>` anywhere   → NOVEL_GENE (but see below —
+#'                                             structure CANNOT tell a novel gene
+#'                                             from a novel isoform of a known one)
+#'   - `ENSMUST<num>(.<num>)?.p<num>`        → REF
 #'   - `sp|...|...`, `tr|...|...`, `ENSP*`   → UNIPROT canonical
 #'
-#' OPTIONAL refinement: if `fasta_path` points at the proteogenomics FASTA
-#' that was searched, we parse its `>` lines to recover the original
-#' source= tag (REF vs NOVEL_ISOFORM split, ORF_type, parent_gene). Entries
-#' marked `source=NOVEL_ISOFORM` in the FASTA are upgraded from REF.
-#' Without the FASTA, ENSMUST entries are classified REF (best-effort
-#' conservative default).
+#' FASTA REFINEMENT — the `source=` tag is AUTHORITATIVE where present. If
+#' `fasta_path` points at the proteogenomics FASTA that was searched, we parse its
+#' `>` lines for `source=` / `ORF_type=` / `parent_gene=` and use the tag in place
+#' of the structural guess, per member.
+#'
+#' This matters because the structural guess is systematically wrong for one class:
+#' a StringTie-assembled novel ISOFORM of a known gene carries an `MSTRG.*.pN`
+#' transcript ID, so it looks identical to a novel GENE. Only the FASTA knows the
+#' difference (it also carries the Ensembl `parent_gene=`). Trusting the tag stops
+#' those proteins being counted as novel genes — an earlier version only allowed an
+#' exact REF→NOVEL_ISOFORM upgrade, which this class could never reach.
+#'
+#' Without a FASTA, classification falls back to structure alone and `orf_type` /
+#' `parent_gene` stay NA rather than being invented.
 #'
 #' Group accessions like `ENSMUST00000071044.13.p1;ENSMUST00000114071.8.p1;MSTRG.19225.5.p1`
-#' are classified by their MOST PROTEOGENOMIC member (precedence:
-#' NOVEL_GENE > NOVEL_ISOFORM > REF > UNIPROT > VARIANT precedes nothing).
+#' are classified by their MOST PROTEOGENOMIC member — see `.CLASS_PRECEDENCE`.
 #' This surfaces the discovery rather than hiding it under a canonical co-ID.
+#' `orf_type` / `parent_gene` are taken from the member that DETERMINED the class,
+#' so all three columns describe the same protein.
 #'
 #' Accepts EITHER a flat genes data.frame OR a limma/limpa EList-like object
 #' that has a `$genes` slot — extracts `$genes` automatically.
@@ -76,8 +86,9 @@ if (!exists("%||%")) {
 #' @param diann_report data.frame, list with `$genes`, or character vector of
 #'   Protein.Group strings
 #' @param fasta_path optional character — assembled FASTA used in the DIA-NN
-#'   search. When provided, enables REF→NOVEL_ISOFORM upgrade + ORF_type/
-#'   parent_gene recovery for entries the FASTA has metadata for.
+#'   search. When provided, its `source=` tag overrides the structural guess and
+#'   ORF_type/parent_gene are recovered for entries the FASTA has metadata for.
+#'   Production always passes this (see `server_data.R`).
 #' @return data.frame: Protein.Group, source, orf_type, parent_gene
 classify_proteins <- function(diann_report, fasta_path = NULL) {
   ids <- .extract_protein_groups(diann_report)
@@ -107,23 +118,34 @@ classify_proteins <- function(diann_report, fasta_path = NULL) {
     pg_lkp  <- setNames(fasta_map$parent_gene,  fasta_map$protein_id)
 
     for (i in seq_along(ids)) {
-      members <- strsplit(ids[i], ";", fixed = TRUE)[[1]]
+      members <- .group_members(ids[i])
+      if (length(members) == 0) next
       # For each member, normalize to the bare protein_id (strip sp|...|... wrap)
       member_ids <- vapply(members, .strip_sp_prefix, character(1),
                            USE.NAMES = FALSE)
-      hits <- src_lkp[member_ids]
-      hits <- hits[!is.na(hits)]
-      if (length(hits) > 0) {
-        # Upgrade REF → NOVEL_ISOFORM if any member is marked NOVEL_ISOFORM in FASTA
-        if (any(hits == "NOVEL_ISOFORM") && src[i] == "REF") {
-          src[i] <- "NOVEL_ISOFORM"
-        }
-        # Take ORF_type / parent_gene from the first matching member
-        first_hit <- which(!is.na(src_lkp[member_ids]))[1]
-        if (!is.na(first_hit)) {
-          orf[i] <- orf_lkp[member_ids[first_hit]]
-          pg[i]  <- pg_lkp[member_ids[first_hit]]
-        }
+
+      # The FASTA's `source=` tag is AUTHORITATIVE where it exists: it was written
+      # by the assembly pipeline, which knows the parent gene. The accession is only
+      # a structural guess and is wrong for a whole class of proteins — a novel
+      # isoform of a known gene gets an `MSTRG.*.pN` ID and so *looks* like a novel
+      # gene. Resolving per member (FASTA tag if tagged, structure otherwise) and
+      # then applying precedence means such proteins are no longer miscounted as
+      # novel genes. Previously only an exact REF -> NOVEL_ISOFORM upgrade was
+      # allowed, which that class could never reach.
+      fasta_src <- unname(src_lkp[member_ids])
+      struct_src <- vapply(members, .classify_single_accession, character(1),
+                           USE.NAMES = FALSE)
+      member_src <- ifelse(is.na(fasta_src), struct_src, fasta_src)
+      src[i] <- .pick_class(member_src)
+
+      # Take ORF_type / parent_gene from the member that DETERMINED the class, so
+      # the three columns describe the same protein. (Taking them from the first
+      # FASTA-tagged member could pair one member's source with another's parent_gene.)
+      winner <- which(member_src == src[i] & !is.na(fasta_src))[1]
+      if (is.na(winner)) winner <- which(!is.na(fasta_src))[1]
+      if (!is.na(winner)) {
+        orf[i] <- unname(orf_lkp[member_ids[winner]])
+        pg[i]  <- unname(pg_lkp[member_ids[winner]])
       }
     }
   }
@@ -172,22 +194,38 @@ classify_proteins <- function(diann_report, fasta_path = NULL) {
   x
 }
 
-#' Classify a single Protein.Group string (possibly `;`-joined) by accession
-#' structure. Precedence: VARIANT > NOVEL_GENE > NOVEL_ISOFORM > REF > UNIPROT.
-#' NOVEL_ISOFORM cannot be detected from accession alone (an `ENSMUST*.pN`
-#' looks identical whether it's REF or a novel isoform of the same gene);
-#' it's only upgraded when the FASTA refinement step finds a `source=NOVEL_ISOFORM`
-#' tag. So accession-based classification never returns NOVEL_ISOFORM directly.
-.classify_group_accession <- function(group_str) {
-  if (is.na(group_str) || !nzchar(group_str)) return("UNKNOWN")
-  members <- strsplit(group_str, ";", fixed = TRUE)[[1]]
-  member_class <- vapply(members, .classify_single_accession, character(1),
-                         USE.NAMES = FALSE)
-  # Precedence — surface the most proteogenomic class in the group.
-  for (cls in c("VARIANT", "NOVEL_GENE", "REF", "UNIPROT")) {
+#' Class precedence, most proteogenomic first. ONE definition — both the
+#' accession-structure classifier and the FASTA-refined classifier resolve a
+#' `;`-joined group through this, so they cannot drift apart.
+.CLASS_PRECEDENCE <- c("VARIANT", "NOVEL_GENE", "NOVEL_ISOFORM", "REF", "UNIPROT")
+
+#' Pick the most proteogenomic class present among a group's members.
+.pick_class <- function(member_class) {
+  for (cls in .CLASS_PRECEDENCE) {
     if (cls %in% member_class) return(cls)
   }
   "UNKNOWN"
+}
+
+#' Split a `;`-joined Protein.Group into its member accessions.
+.group_members <- function(group_str) {
+  if (is.na(group_str) || !nzchar(group_str)) return(character(0))
+  strsplit(group_str, ";", fixed = TRUE)[[1]]
+}
+
+#' Classify a single Protein.Group string (possibly `;`-joined) by accession
+#' structure alone. Precedence: see `.CLASS_PRECEDENCE`.
+#'
+#' NOVEL_ISOFORM is NOT derivable from an accession: a StringTie-assembled novel
+#' isoform of a known gene carries an `MSTRG.*.pN` transcript ID, structurally
+#' identical to a novel *gene*. Only the FASTA's `source=` tag knows the
+#' difference (it also carries the Ensembl `parent_gene=`), so this function
+#' never returns NOVEL_ISOFORM — `classify_proteins()` resolves it from the FASTA.
+.classify_group_accession <- function(group_str) {
+  if (is.na(group_str) || !nzchar(group_str)) return("UNKNOWN")
+  member_class <- vapply(.group_members(group_str), .classify_single_accession,
+                         character(1), USE.NAMES = FALSE)
+  .pick_class(member_class)
 }
 
 #' Classify a single (un-joined) accession string by structure.
