@@ -2009,8 +2009,19 @@ assign_hypothesis <- function(row, source_b, global_offset = 0, run_a_id = "dpc"
 }
 
 # --- AI Prompt Builders ---
+#
+# READABLE COPY OF BOTH PROMPTS: docs/AI_PROMPTS.md
+#
+# These prompts are assembled from dozens of paste0() fragments, so most sentences
+# span concatenation boundaries and CANNOT be found by searching the repo. If you
+# edit prompt text here, update docs/AI_PROMPTS.md in the same commit.
+#
+# To read the live prompt with real data instead, use the "View Prompt" button in
+# the Comparator UI (see the comparator_view_prompt_btn observer below) — it renders
+# the exact assembled string and is current by construction.
 
 #' Build Gemini prompt for run comparator (tool-aware)
+#' @details Readable template: docs/AI_PROMPTS.md section 1
 build_gemini_comparator_prompt <- function(comp_results, mofa_obj = NULL, instrument_meta = NULL) {
   stats    <- comp_results$summary_stats
   top_disc <- head(comp_results$de_concordance$discordant_table, 10)
@@ -2279,6 +2290,7 @@ build_gemini_comparator_prompt <- function(comp_results, mofa_obj = NULL, instru
 }
 
 #' Build Claude export prompt
+#' @details Readable template: docs/AI_PROMPTS.md section 2. Keep them in sync.
 build_claude_comparator_prompt <- function(comp_results, gemini_narrative = NULL, instrument_meta = NULL) {
   stats    <- comp_results$summary_stats
   source_b <- stats$source_b
