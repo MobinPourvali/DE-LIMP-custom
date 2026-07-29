@@ -135,6 +135,30 @@ Read `platform_class` (mac|hpc|linux), `container_runtime`, `uc_davis_hive`. Thi
 decides how tools are acquired and whether to submit via SLURM.
 → detail: `references/environment.md`.
 
+### 0c. Is this a RESUME? — CHECK THIS BEFORE STARTING ANYTHING
+A cluster search runs for hours and the user **will** close their laptop. The SLURM
+jobs survive that; the conversation does not. So before doing any work, check whether
+an earlier session already submitted something:
+```
+python3 scripts/checkpoint.py find --base <where results live>   # e.g. ~ or the project dir
+python3 scripts/checkpoint.py status --session <session dir>     # live sacct re-query
+```
+`status` returns each stage's real state, whether the expected output file exists, and
+`next_commands` — the exact commands still outstanding. If a run is found:
+
+- **Still RUNNING** → say so, give the job ids, and offer to wait (`watch_run.sh`) rather
+  than resubmitting. **Never resubmit a search that is already running** — it wastes hours
+  of cluster time and the user's budget.
+- **COMPLETED and the output exists** → skip the search entirely and continue from
+  `next_commands` (usually DE onward).
+- **FAILED or stalled** → apply the `watch_run.sh` playbook (step 7b) and resubmit only the
+  incomplete steps; finished `.quant` files and the predicted library are reused.
+
+`submit.sh` writes `RECOVERY.md` + `.recovery.json` into the session directory
+automatically, so this works even if the previous session ended mid-sentence. Tell the
+user, in plain words, that they can close their terminal and that the jobs will keep
+going — they do not need `tmux` or `screen` for this.
+
 ### 1. Locate the raw files
 Ask the user for a directory or file list if not given. Recognized: `.d` (Bruker),
 `.raw` (Thermo), `.mzML[.gz]`, `.wiff` (convert first). Glob to a concrete list.
