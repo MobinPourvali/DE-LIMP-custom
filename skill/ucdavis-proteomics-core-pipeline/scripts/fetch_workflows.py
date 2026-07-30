@@ -23,8 +23,14 @@ Two modes:
   python3 fetch_workflows.py pull --id diann_astral_dia_human --dest ./wf
   python3 fetch_workflows.py pull --id ... --ref <commit_sha> --dest ./wf  # exact re-run
 
-Match key (locked, see PLAN.md §2): acquisition + instrument + organism_taxid.
-Organism is a hard filter (it defines the FASTA); instrument is a tiebreaker.
+Match key: acquisition + engine + instrument, with organism_taxid as a preference.
+
+Acquisition and an explicitly-requested engine are HARD filters. Organism is NOT:
+search parameters do not depend on species -- only the FASTA does, and that is
+resolved separately from the user's own organism answer. Treating organism as a hard
+filter forced a near-duplicate workflow per species and, worse, meant a query whose
+species had no entry for the requested engine silently matched a DIFFERENT engine's
+workflow. An exact organism match still scores highest and is preferred.
 """
 import sys, os, json, argparse, tempfile, urllib.request, urllib.error
 
@@ -102,37 +108,74 @@ def do_match(args):
     taxid = int(args.organism_taxid)
     instrument = args.instrument or ""
 
-    pool = [w for w in idx["workflows"]
-            if w["match"]["acquisition"].upper() == acq
-            and int(w["match"]["organism_taxid"]) == taxid]
+    engine = (getattr(args, "engine", None) or "").strip().lower()
+
+    pool = [w for w in idx["workflows"] if w["match"]["acquisition"].upper() == acq]
+
+    # An explicitly-requested engine is a HARD filter. Silently returning a different
+    # engine's workflow is the worst possible failure here: the user asked for DIA-NN,
+    # got FragPipe, and nothing in the output said so.
+    def engine_name(w):
+        """`engine` in the registry is {"name": ..., "version": ...}, not a string."""
+        e = w.get("engine")
+        return str(e.get("name", "") if isinstance(e, dict) else (e or "")).lower()
+
+    engine_pool = [w for w in pool if engine_name(w) == engine] if engine else pool
+    wrong_engine_only = bool(engine) and not engine_pool and bool(pool)
+    pool = engine_pool
 
     scored = []
     for w in pool:
         s = score_instrument(w["match"], instrument)
-        scored.append({"score": s, **_summary(w, reg)})
+        same_org = int(w["match"].get("organism_taxid", -1)) == taxid
+        # Organism preference, not a gate. Weighted above any instrument score so an
+        # exact-species entry always wins, while a different-species one stays eligible
+        # -- same parameters, different FASTA.
+        scored.append({"score": s + (100 if same_org else 0),
+                       "instrument_score": s,
+                       "organism_match": same_org,
+                       "fasta_note": None if same_org else
+                       "different organism than this workflow was validated on — search "
+                       "parameters carry over unchanged; the FASTA comes from YOUR organism",
+                       **_summary(w, reg)})
     scored.sort(key=lambda x: x["score"], reverse=True)
 
     selected = scored[0] if scored else None
     top = scored[0]["score"] if scored else None
+    top_instrument = scored[0]["instrument_score"] if scored else None
     tie = len(scored) > 1 and scored[0]["score"] == scored[1]["score"]
+    cross_organism = bool(selected) and not selected.get("organism_match", True)
     # A workflow with no validation date has never been run against facility data. It may
     # still be the right choice, but it must never become a silent default just because it
     # was the only thing that matched -- the user has to opt into it knowingly.
     unvalidated = bool(selected) and not (selected.get("validated") or {}).get("date")
-    needs_menu = (len(scored) == 0) or tie or (top == 0) or unvalidated
+    needs_menu = ((len(scored) == 0) or tie or (top_instrument == 0)
+                  or unvalidated or cross_organism)
 
     out = {
-        "query": {"acquisition": acq, "organism_taxid": taxid, "instrument": instrument},
+        "query": {"acquisition": acq, "organism_taxid": taxid, "instrument": instrument,
+                  "engine": engine or None},
+        "wrong_engine_only": wrong_engine_only,
+        "cross_organism": cross_organism,
         "registry": reg,
         "selected": selected,
         "candidates": scored,
         "needs_menu": needs_menu,
         "unvalidated": unvalidated,
         "reason": (
-            "no validated workflow matches this acquisition+organism — add one to the registry"
+            (f"no {engine} workflow exists for this acquisition — the registry has other "
+             f"engines for it, but you asked for {engine}. Say so plainly and let the user "
+             f"choose: proceed with {engine} using estimated parameters, or switch engine. "
+             f"NEVER silently substitute a different engine.")
+            if wrong_engine_only else
+            "no validated workflow matches this acquisition — add one to the registry"
             if not scored else
+            "closest workflow was validated on a different organism — confirm with the user "
+            "(parameters carry over; the FASTA comes from their organism)" if cross_organism else
             "tie at the top score — ask the user which instrument/SOP applies" if tie else
-            "no instrument info — confirm the auto-pick with the user" if top == 0 else
+            "this workflow was validated on a different instrument — confirm the auto-pick "
+            "with the user (mass tolerances are re-estimated per instrument)"
+            if top_instrument == 0 else
             "the best match has NOT been validated on facility data — present it as a choice, "
             "say plainly that it is unvalidated, and note any licence restriction before running"
             if unvalidated else
@@ -209,6 +252,10 @@ def main():
     m.add_argument("--acquisition", required=True, choices=["DIA", "DDA", "dia", "dda"])
     m.add_argument("--organism-taxid", required=True)
     m.add_argument("--instrument", default="")
+    m.add_argument("--engine", default="",
+                   help="HARD filter when the user names an engine (diann/sage/fragpipe/"
+                        "alphadia). Never substituted silently — if no workflow uses that "
+                        "engine, the result says so instead of returning another engine's.")
     m.add_argument("--ref", default="main", help="registry ref to read (branch/tag/sha)")
     m.set_defaults(func=do_match)
 

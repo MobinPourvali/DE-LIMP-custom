@@ -499,27 +499,98 @@ def _find(root, names):
     return None
 
 
-def emit_sbatch(path, command, out, threads, job, preamble=""):
+def slurm_queue(partition=None, account=None, qos=None):
+    """Pick a SLURM partition/account/qos the CURRENT USER can actually submit to.
+
+    Never hardcode a queue. The old behaviour emitted
+    `--partition=high --qos=genome-center-grp-high-qos` unconditionally, which a user
+    outside genome-center-grp cannot submit to at all — the job is REJECTED, not merely
+    slowed. And on HIVE `high` caps publicgrp at 8 CPUs / 128 GB per job, so a 32-CPU
+    request there would never start (QOSMaxCpuPerJobLimit).
+
+    Ask SLURM what this account is entitled to, then prefer, in order:
+      1. an explicit override the caller passed
+      2. genome-center-grp on `high`   (facility members: no per-job cap, not preemptible)
+      3. publicgrp on `low`            (everyone else, incl. class accounts: no per-job
+                                        cap either, preemptible — add --requeue)
+    Returns (partition, account, qos); any may be None, and a None is simply omitted
+    from the script so SLURM applies its own default."""
+    if partition and account:
+        return partition, account, qos
+    assoc = []
+    # sacctmgr is frequently absent from PATH in a non-login shell, so look for it
+    # explicitly. Failing to find it must NOT silently emit an empty queue: SLURM would
+    # then use the cluster default partition, which on HIVE is `high` — precisely the
+    # queue a non-facility account cannot use.
+    sacctmgr = shutil.which("sacctmgr")
+    if not sacctmgr:
+        for c in ("/usr/bin/sacctmgr", "/usr/local/bin/sacctmgr",
+                  "/cvmfs/hpc.ucdavis.edu/sw/spack/environments/core/view/generic/slurm/bin/sacctmgr"):
+            if os.path.exists(c):
+                sacctmgr = c
+                break
+    try:
+        if not sacctmgr:
+            raise FileNotFoundError("sacctmgr not found")
+        out = subprocess.run(
+            [sacctmgr, "-nP", "show", "assoc",
+             f"user={os.environ.get('USER', '')}", "format=account,partition,qos"],
+            capture_output=True, text=True, timeout=30).stdout
+        for line in out.splitlines():
+            f = line.split("|")
+            if len(f) >= 3 and f[0]:
+                assoc.append((f[0].strip(), f[1].strip(), f[2].strip()))
+    except Exception:
+        pass                                  # no SLURM, or sacctmgr unavailable
+
+    def find(acct, part):
+        for a, p, q in assoc:
+            if a == acct and p == part:
+                return a, p, (q or None)
+        return None
+
+    for acct, part in (("genome-center-grp", "high"), ("publicgrp", "low")):
+        hit = find(acct, part)
+        if hit:
+            a, p, q = hit
+            return partition or p, account or a, qos or q
+    if assoc:                                  # entitled to something unanticipated
+        a, p, q = assoc[0]
+        return partition or (p or None), account or a, qos or (q or None)
+    # Could not detect. Do NOT fall through to the cluster default — on HIVE that is
+    # `high`, which rejects non-facility accounts. publicgrp/low is submittable by
+    # everyone who has any allocation at all, so it is the safe floor.
+    return partition or "low", account or "publicgrp", qos
+
+
+def emit_sbatch(path, command, out, threads, job, preamble="",
+                partition=None, account=None, qos=None, mem="64G", hours=12):
     """Emit a minimal SLURM script (login-node-safe). Orchestrator submits it.
-    Mirrors DE-LIMP queue policy: genome-center-grp/high, publicgrp/low fallback.
-    `preamble` runs before the command (e.g. the DOTNET_ROOT exports that let
-    DIA-NN 2.6 read Thermo .raw)."""
+    The queue is DETECTED from the submitting user's own SLURM associations — see
+    slurm_queue(). `preamble` runs before the command (e.g. the DOTNET_ROOT exports
+    that let DIA-NN 2.6 read Thermo .raw)."""
+    part, acct, q = slurm_queue(partition, account, qos)
     pre = (preamble + "\n") if preamble else ""
-    script = f"""#!/bin/bash -l
-#SBATCH --job-name={job}
-#SBATCH --output={os.path.join(out, job)}_%j.log
-#SBATCH --cpus-per-task={threads}
-#SBATCH --mem=64G
-#SBATCH --time=12:00:00
-#SBATCH --partition=high
-#SBATCH --qos=genome-center-grp-high-qos
-set -euo pipefail
-cd {shlex.quote(os.path.abspath(out))}
-{pre}{command}
-"""
+    lines = [
+        "#!/bin/bash -l",
+        f"#SBATCH --job-name={job}",
+        f"#SBATCH --output={os.path.join(out, job)}_%j.log",
+        f"#SBATCH --cpus-per-task={threads}",
+        f"#SBATCH --mem={mem}",
+        f"#SBATCH --time={hours}:00:00",
+    ]
+    if part:  lines.append(f"#SBATCH --partition={part}")
+    if acct:  lines.append(f"#SBATCH --account={acct}")
+    if q:     lines.append(f"#SBATCH --qos={q}")
+    # `low` is preemptible; without --requeue a preempted search is simply lost.
+    if part == "low":
+        lines.append("#SBATCH --requeue")
+    lines += ["set -euo pipefail", f"cd {shlex.quote(os.path.abspath(out))}", f"{pre}{command}", ""]
+    script = "\n".join(lines)
     with open(path, "w") as fh:
         fh.write(script)
-    print(f"  [sbatch] wrote {path} — submit with: sbatch {path}")
+    print(f"  [sbatch] wrote {path} (partition={part or 'default'}, "
+          f"account={acct or 'default'}) — submit with: sbatch {path}")
 
 
 def main():
