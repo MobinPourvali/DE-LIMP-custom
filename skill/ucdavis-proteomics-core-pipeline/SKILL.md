@@ -475,9 +475,20 @@ python3 scripts/run_search.py --tools ~/.proteomics-pipeline/tools/tools.json \
   - ⚠ **`--libfree` is a misnomer.** In Radiant's CLI it is the same switch as
     `--no-mbr`, so it selects single-pass vs match-between-runs — it does **not**
     mean "no library". Use `--mbr` for the two-pass route.
-  - Multi-file runs are **serial** (the search backend raises `NotImplementedError`
-    for parallel mode), so wall-clock scales linearly with file count. Budget for it,
-    and prefer `--sbatch` on HIVE.
+  - **On a cluster, this parallelises automatically.** Radiant's own backend is
+    serial (`NotImplementedError` for parallel mode), so N files would cost N × one
+    file. But the *search* is per-file independent — only rescoring/FDR/inference/
+    rollup need the whole set. With >1 file and `sbatch` on PATH, `run_search.py`
+    emits a **3-step chain** via `radiant_parallel.py`:
+    1. DIA-NN predicts the library (1 job)
+    2. **one `RadiantDIA` per file as a SLURM array** (N tasks) → `.radiantDIA` results
+    3. **one Fulcrum job** rescores the whole set (`reuse_existing = true` makes it
+       skip re-searching and go straight to FDR + inference + rollup)
+
+    Submit with dependencies (the JSON output prints the exact lines), then
+    `run_search.py --adapt-only --engine radiant` to build `report.parquet`. Step 2 is
+    idempotent, so a preempted `publicgrp/low` task requeues without redoing work.
+    Use `--no-parallel` to force the single serial search.
   - Licence: Apache-2.0 + **Commons Clause** + mandatory grant-back — see step 4a.
 - **FragPipe + diaTracer (timsTOF dia-PASEF, spectrum-centric DIA).** A second DIA route,
   used when the bundle names it or the user asks for it. diaTracer traces 3-D features and

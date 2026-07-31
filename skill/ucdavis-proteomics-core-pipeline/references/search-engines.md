@@ -130,8 +130,9 @@ Radiant source (`seerbio/radiant`, internal name **Pythia**), not inferred from 
   predictor**; Radiant's `FragLibTsvReader` takes DIA-NN's library TSV schema
   directly (its test fixture header is DIA-NN's `report-lib.tsv` columns verbatim).
   So **this route needs DIA-NN acquired too**. `--library` reuses an existing one.
-- **Multi-file runs are serial** — the backend raises `NotImplementedError` for
-  parallel mode, so wall-clock scales linearly with file count.
+- **Multi-file runs are serial in Radiant itself** — the backend raises
+  `NotImplementedError` for parallel mode. On a cluster the skill works around this
+  (below), so this only bites on a single machine.
 - **Container only.** No native binary on any platform; multi-arch image
   (linux/amd64 + linux/arm64) so it runs natively on Apple Silicon and on HIVE.
   `acquire_tools.sh` records the runtime (`docker`/`apptainer`) and image separately
@@ -143,6 +144,28 @@ Radiant source (`seerbio/radiant`, internal name **Pythia**), not inferred from 
 selling a service whose value derives substantially from the software. That is a
 live question for a fee-for-service core; surface it before running and let the
 institution decide. It also appears in `tools.json` `notes`.
+
+**Cluster parallelism (`radiant_parallel.py`).** The serial limit is in Radiant's
+*orchestration*, not in the science: each file is searched independently, and only
+the downstream stages need every file at once. So the chain splits exactly there —
+and `run_search.py` routes to it automatically when there is >1 file and `sbatch` is
+on PATH:
+
+| step | job | what it does |
+|---|---|---|
+| 1 | single | DIA-NN predicts the spectral library |
+| 2 | **array, N tasks** | one `RadiantDIA` per mzML → `<results>/radiant-results/<name>.radiantDIA` |
+| 3 | single | `fulcrum --toml-file` rescoring + FDR + inference + rollup over all files |
+
+Step 3 does **not** re-search: `_execute_radiant()` resolves its result path as
+`<output_location>/<input name>.radiantDIA` and returns it untouched when
+`reuse_existing` is set, so the generated TOML carries `[overrides.search]
+reuse_existing = true` and Fulcrum goes straight to the downstream stages. That
+directory name is the contract between steps 2 and 3 — don't rename it.
+
+Step 2 skips any file whose `.radiantDIA` already exists, so a preempted
+`publicgrp/low` task requeues without redoing work, and step 3 refuses to rescore a
+partial set. `--no-parallel` forces the single serial search.
 
 **Adapter.** Fulcrum's `combined` output backend already uses DIA-NN-style column
 names (`Run`, `Protein.Group`, `Precursor.Quantity`, `PG.Quantity`, `PG.Normalised`,

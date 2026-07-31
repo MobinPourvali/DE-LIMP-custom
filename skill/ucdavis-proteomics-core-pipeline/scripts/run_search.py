@@ -306,6 +306,45 @@ def radiant_library(tools, fasta, out, threads, params=None):
     return lib
 
 
+def run_radiant_parallel(tools, params, files, fasta, out, threads, a, library=None):
+    """On a cluster, search each file as its own array task, then rescore once.
+
+    Radiant's Fulcrum backend is SERIAL (`NotImplementedError` for parallel mode), so
+    an N-file study otherwise costs N x one-file wall-clock even on a big node. The
+    search is per-file independent though; only the downstream rescoring/FDR/rollup
+    needs the whole set. radiant_parallel.py splits exactly there and emits a 3-step
+    chain. Emits scripts; the orchestrator submits them with dependencies."""
+    os.makedirs(out, exist_ok=True)
+    listing = os.path.join(out, "radiant_input_files.txt")
+    with open(listing, "w") as fh:
+        fh.write("\n".join(files) + "\n")
+    argv = [sys.executable, os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                         "radiant_parallel.py"),
+            "--runtime", tools.get("radiant_runtime") or "docker",
+            "--image", tools.get("radiant_image") or "",
+            "--raw-list", listing, "--fasta", fasta, "--config", params,
+            "--out", out, "--threads-per-file", str(threads)]
+    if library:
+        argv += ["--library", library]
+    elif tools.get("diann"):
+        argv += ["--diann", tools["diann"]]
+    for flag, val in (("--partition", a.partition), ("--account", a.account),
+                      ("--qos", a.qos), ("--max-simultaneous", a.max_simultaneous)):
+        if val:
+            argv += [flag, str(val)]
+    if getattr(a, "mbr", False):
+        argv.append("--mbr")
+    res = subprocess.run(argv, capture_output=True, text=True)
+    if res.stderr:
+        sys.stderr.write(res.stderr)
+    if res.returncode != 0:
+        sys.exit(f"radiant_parallel.py failed (exit {res.returncode}). "
+                 "Re-run with --no-parallel for a single serial search.")
+    info = json.loads(res.stdout)
+    info.update({"engine": "radiant", "ran": False})
+    return info
+
+
 def run_radiant(tools, params, files, fasta, out, threads, sbatch, library=None, mbr=False):
     os.makedirs(out, exist_ok=True)
     bad = [f for f in files if f.rstrip("/").lower().endswith(".d")]
@@ -856,8 +895,17 @@ def main():
     elif engine == "radiant":
         # Takes the whole tools dict: it needs the container runtime + image to build
         # bind mounts, and DIA-NN to generate the spectral library.
-        res = run_radiant(tools, a.params, files, a.fasta, a.out, a.threads, a.sbatch,
-                          library=a.library, mbr=a.mbr)
+        # On a cluster with >1 file, split the SERIAL search into a per-file array and
+        # rescore once — Radiant's own backend cannot parallelise, but the search is
+        # per-file independent, so this is the difference between N x t and ~t.
+        if (len(files) > 1 and slurm_available() and not a.no_parallel):
+            print(f"[run_search] radiant: {len(files)} files on SLURM -> per-file array "
+                  f"+ one Fulcrum rescoring job (Radiant's own search is serial)")
+            res = run_radiant_parallel(tools, a.params, files, a.fasta, a.out,
+                                       a.threads, a, library=a.library)
+        else:
+            res = run_radiant(tools, a.params, files, a.fasta, a.out, a.threads, a.sbatch,
+                              library=a.library, mbr=a.mbr)
     else:
         sys.exit(f"unknown engine {engine}")
 
