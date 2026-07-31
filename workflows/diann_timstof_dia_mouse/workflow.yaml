@@ -48,6 +48,16 @@ de:
   logfc: 1.0
   adjp: 0.05
 
+validated:
+  date: ""
+  by: ""
+  dataset: ""
+  notes: >
+    NOT VALIDATED. The schema requires this block and it was missing, which failed
+    the registry's own manifest validation for every bundle in the repo. Parameters
+    are the estimator's timsTOF defaults; no facility dataset has been run through
+    this entry yet. The first run IS the validation run.
+
 notes:
   - "run_search.py auto-routes >5 files to the 5-step chain. The estimator's timsTOF 15/15 ppm satisfies the chain's fixed-mass-accuracy requirement, so parallel engages for this workflow."
   - "Report protein counts from report.stats.tsv, not from the post-DPC matrix (which is complete by construction)."

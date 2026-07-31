@@ -33,6 +33,10 @@ def load(wf_dir):
             "instrument_aliases": m["match"].get("instrument_aliases", []),
             "organism": m["match"].get("organism"),
             "organism_taxid": m["match"]["organism_taxid"],
+            # Hardware-SPECIFIC (not merely -preferring) bundles are dropped rather
+            # than down-scored when the instrument doesn't match. Must reach the index
+            # or fetch_workflows.py can never act on it.
+            "instrument_required": m["match"].get("instrument_required", False),
         },
         "engine": {"name": m["engine"]["name"], "version": m["engine"]["version"]},
         "fasta": m.get("fasta", {}),
