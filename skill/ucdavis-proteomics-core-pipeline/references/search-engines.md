@@ -51,6 +51,7 @@ Windows, or Linux). `setup.sh`/`acquire_tools.sh` fetch the free ones automatica
 | **DIA-NN** (Academia) | https://github.com/vdemichev/DiaNN/releases | Windows, Linux | Windows GUI+CLI, or Linux binary; academic / non-profit only. `acquire_tools.sh` fetches the Linux build. DDA since 2.3 (`--dda`). |
 | **Sage** | https://github.com/lazear/sage/releases | Win, macOS, Linux | MIT; single static binary. |
 | **AlphaDIA** | https://github.com/MannLabs/alphadia | Win, macOS, Linux | Apache-2.0 (commercial-OK); `pip install alphadia`, GPU recommended. |
+| **Radiant DIA + Fulcrum** (Seer) | https://github.com/seerbio/radiant-fulcrum-container · image `seerbio/radiant-fulcrum` | container only (multi-arch amd64+arm64) | **Thermo Orbitrap only** here (mzML/Parquet input). Needs a DIA-NN-generated library. **Apache-2.0 + Commons Clause + grant-back** — restricts selling a derived service. |
 | **FragPipe** (MSFragger/IonQuant) | https://github.com/Nesvilab/FragPipe/releases | Win, macOS, Linux | Java GUI; MSFragger/IonQuant need the user's own (free-academic) license. |
 | **ThermoRawFileParser** | https://github.com/compomics/ThermoRawFileParser/releases | Win, macOS, Linux | `.raw`→mzML; cross-platform .NET. |
 | **ProteoWizard / msconvert** | https://proteowizard.sourceforge.io/ | Windows (native); Linux/macOS via Docker | vendor→mzML; Linux via the `chambm/pwiz-...` Docker image. |
@@ -101,6 +102,77 @@ run, and baked into the emitted sbatch as a preamble). When it's right, DIA-NN l
 `.NET runtime found, Thermo .raw support enabled`. Alternative with **no** .NET: feed
 `.mzML` (DIA-NN reads those natively) — convert `.raw`→mzML with ThermoRawFileParser /
 msconvert if you don't already have them.
+
+### Radiant DIA + Fulcrum (Seer; Thermo Orbitrap only)
+
+Peptide-centric DIA search (Radiant) inside Seer's Fulcrum workflow engine, which
+adds rescoring, FDR, protein inference and directLFQ rollup. Third of the three DIA
+routes; **default to DIA-NN** unless the user asks for this one.
+
+```
+python3 scripts/run_search.py ... --engine radiant --params ./wf/default.radiantConfig
+```
+
+Everything below was verified against `seerbio/radiant-fulcrum:2.3.3` and the
+Radiant source (`seerbio/radiant`, internal name **Pythia**), not inferred from docs.
+
+**Constraints that decide whether you can use it at all**
+
+- **Thermo Orbitrap only, in this route.** The container's search backend accepts
+  **mzML or Parquet** (`radiant_fulcrum_search/search.py`), so `.raw` is converted
+  with `msconvert` first and Bruker `.d` is refused with a pointer to the DIA-NN or
+  diaTracer route. (Radiant's *source* does have an ion-mobility module, but that
+  is not reachable through this container CLI.)
+- **A spectral library is always required.** `--library` is `required=True`, and
+  **`--libfree` does not mean library-free** — in the click definition it is the
+  same switch as `--no-mbr` (`"--mbr/--no-mbr", "--no-libfree/--libfree"`), so it
+  selects single-pass vs MBR. `run_search.py` generates the library with **DIA-NN's
+  predictor**; Radiant's `FragLibTsvReader` takes DIA-NN's library TSV schema
+  directly (its test fixture header is DIA-NN's `report-lib.tsv` columns verbatim).
+  So **this route needs DIA-NN acquired too**. `--library` reuses an existing one.
+- **Multi-file runs are serial in Radiant itself** — the backend raises
+  `NotImplementedError` for parallel mode. On a cluster the skill works around this
+  (below), so this only bites on a single machine.
+- **Container only.** No native binary on any platform; multi-arch image
+  (linux/amd64 + linux/arm64) so it runs natively on Apple Silicon and on HIVE.
+  `acquire_tools.sh` records the runtime (`docker`/`apptainer`) and image separately
+  because `run_search.py` has to inject bind mounts, and `-v` vs `--bind` differ.
+  Not acquired by default (~3 GB) — set `ACQUIRE_RADIANT=1` or pin the engine.
+
+**⚠ Licence.** Apache-2.0 as modified by a **mandatory grant-back** and the
+**Commons Clause**. The Commons Clause removes the right to *Sell* — including
+selling a service whose value derives substantially from the software. That is a
+live question for a fee-for-service core; surface it before running and let the
+institution decide. It also appears in `tools.json` `notes`.
+
+**Cluster parallelism (`radiant_parallel.py`).** The serial limit is in Radiant's
+*orchestration*, not in the science: each file is searched independently, and only
+the downstream stages need every file at once. So the chain splits exactly there —
+and `run_search.py` routes to it automatically when there is >1 file and `sbatch` is
+on PATH:
+
+| step | job | what it does |
+|---|---|---|
+| 1 | single | DIA-NN predicts the spectral library |
+| 2 | **array, N tasks** | one `RadiantDIA` per mzML → `<results>/radiant-results/<name>.radiantDIA` |
+| 3 | single | `fulcrum --toml-file` rescoring + FDR + inference + rollup over all files |
+
+Step 3 does **not** re-search: `_execute_radiant()` resolves its result path as
+`<output_location>/<input name>.radiantDIA` and returns it untouched when
+`reuse_existing` is set, so the generated TOML carries `[overrides.search]
+reuse_existing = true` and Fulcrum goes straight to the downstream stages. That
+directory name is the contract between steps 2 and 3 — don't rename it.
+
+Step 2 skips any file whose `.radiantDIA` already exists, so a preempted
+`publicgrp/low` task requeues without redoing work, and step 3 refuses to rescore a
+partial set. `--no-parallel` forces the single serial search.
+
+**Adapter.** Fulcrum's `combined` output backend already uses DIA-NN-style column
+names (`Run`, `Protein.Group`, `Precursor.Quantity`, `PG.Quantity`, `PG.Normalised`,
+`Q.Value`, `Global.PG.Q.Value`, …) — but writes them as a **spark parquet directory**
+of part-files at `<results>/fulcrum-results`, not a single file. `adapt_radiant`
+reads it as a dataset, collapses PSM-level rows to one protein×run (max intensity,
+best q-value), and writes the usual `report.parquet`.
 
 ### AlphaDIA (commercial-OK DIA; adapter required)
 Apache-2.0 — the open-source alternative to DIA-NN for non-academic users. Library-free:

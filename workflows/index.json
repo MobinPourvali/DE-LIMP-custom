@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "repo": "bsphinney/DE-LIMP",
-  "generated": "2026-07-29",
+  "generated": "2026-07-31",
   "workflows": [
     {
       "id": "diann_astral_dia_human",
@@ -16,7 +16,8 @@
           "astral"
         ],
         "organism": "Homo sapiens",
-        "organism_taxid": 9606
+        "organism_taxid": 9606,
+        "instrument_required": false
       },
       "engine": {
         "name": "diann",
@@ -64,7 +65,8 @@
           "tims"
         ],
         "organism": "Mus musculus",
-        "organism_taxid": 10090
+        "organism_taxid": 10090,
+        "instrument_required": false
       },
       "engine": {
         "name": "diann",
@@ -87,7 +89,66 @@
         "logfc": 1.0,
         "adjp": 0.05
       },
-      "validated": {}
+      "validated": {
+        "date": "",
+        "by": "",
+        "dataset": "",
+        "notes": "NOT VALIDATED. The schema requires this block and it was missing, which failed the registry's own manifest validation for every bundle in the repo. Parameters are the estimator's timsTOF defaults; no facility dataset has been run through this entry yet. The first run IS the validation run.\n"
+      }
+    },
+    {
+      "id": "fragpipe_dia_thermo_human",
+      "name": "FragPipe DIA — Thermo Orbitrap (human)",
+      "path": "workflows/fragpipe_dia_thermo_human",
+      "match": {
+        "acquisition": "DIA",
+        "instruments": [
+          "Orbitrap Astral",
+          "Orbitrap Exploris 480",
+          "Orbitrap Eclipse",
+          "Orbitrap Fusion Lumos",
+          "Q Exactive HF-X",
+          "Orbitrap Exploris 240"
+        ],
+        "instrument_aliases": [
+          "astral",
+          "exploris",
+          "orbitrap",
+          "lumos",
+          "eclipse",
+          "q exactive"
+        ],
+        "organism": "Homo sapiens",
+        "organism_taxid": 9606,
+        "instrument_required": true
+      },
+      "engine": {
+        "name": "fragpipe",
+        "version": "24.0"
+      },
+      "fasta": {
+        "uniprot_proteome": "UP000005640",
+        "add_contaminants": true
+      },
+      "search": {
+        "estimate_params": false,
+        "var_mods": "",
+        "param_overrides": {},
+        "params_file": "DIA_SpecLib_Quant.workflow",
+        "extra_files": []
+      },
+      "de": {
+        "method": "maxlfq",
+        "q_cutoff": 0.01,
+        "logfc": 1.0,
+        "adjp": 0.05
+      },
+      "validated": {
+        "date": "",
+        "by": "",
+        "dataset": "",
+        "notes": "NOT VALIDATED. Parameters are FragPipe 24.0's own bundled DIA_SpecLib_Quant preset, copied unmodified. No facility dataset has been run through this route yet. The first run IS the validation run: compare it against the DIA-NN and Radiant routes on the same files with compare_searches.py and record the outcome here before treating this as a site SOP.\n"
+      }
     },
     {
       "id": "fragpipe_diatracer_timstof_dia_human",
@@ -107,7 +168,8 @@
           "tims"
         ],
         "organism": "Homo sapiens",
-        "organism_taxid": 9606
+        "organism_taxid": 9606,
+        "instrument_required": true
       },
       "engine": {
         "name": "fragpipe",
@@ -138,6 +200,60 @@
       }
     },
     {
+      "id": "radiant_orbitrap_dia_human",
+      "name": "Radiant DIA + Fulcrum — Thermo Orbitrap (human)",
+      "path": "workflows/radiant_orbitrap_dia_human",
+      "match": {
+        "acquisition": "DIA",
+        "instruments": [
+          "Orbitrap Astral",
+          "Orbitrap Exploris 480",
+          "Orbitrap Eclipse",
+          "Orbitrap Fusion Lumos",
+          "Q Exactive HF-X",
+          "Orbitrap Exploris 240"
+        ],
+        "instrument_aliases": [
+          "astral",
+          "exploris",
+          "orbitrap",
+          "lumos",
+          "eclipse",
+          "q exactive"
+        ],
+        "organism": "Homo sapiens",
+        "organism_taxid": 9606,
+        "instrument_required": true
+      },
+      "engine": {
+        "name": "radiant",
+        "version": "2.3.3"
+      },
+      "fasta": {
+        "uniprot_proteome": "UP000005640",
+        "add_contaminants": true
+      },
+      "search": {
+        "estimate_params": false,
+        "var_mods": "",
+        "param_overrides": {},
+        "params_file": "default.radiantConfig",
+        "extra_files": []
+      },
+      "de": {
+        "method": "maxlfq",
+        "q_cutoff": 0.01,
+        "logfc": 1.0,
+        "adjp": 0.05
+      },
+      "validated": {
+        "date": "",
+        "by": "",
+        "dataset": "",
+        "notes": "NOT VALIDATED. default.radiantConfig is the container's own shipped default, copied unmodified — 20 ppm MS1/MS2 extraction, which suits Orbitrap generally but has not been tuned for Astral's narrow isolation windows. No facility dataset has been run through this route yet. The first run IS the validation run: compare it against the DIA-NN route on the same files with compare_searches.py and record the outcome here before treating this as a site SOP.\n"
+      }
+    },
+    {
       "id": "sage_timstof_dda_human",
       "name": "Sage — timsTOF ddaPASEF (human)",
       "path": "workflows/sage_timstof_dda_human",
@@ -153,7 +269,8 @@
           "tims"
         ],
         "organism": "Homo sapiens",
-        "organism_taxid": 9606
+        "organism_taxid": 9606,
+        "instrument_required": false
       },
       "engine": {
         "name": "sage",

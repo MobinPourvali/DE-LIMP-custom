@@ -124,6 +124,23 @@ def do_match(args):
     wrong_engine_only = bool(engine) and not engine_pool and bool(pool)
     pool = engine_pool
 
+    # Some bundles are hardware-specific, not merely hardware-preferring: FragPipe's
+    # diaTracer preset only makes sense for Bruker dia-PASEF .d, and Radiant/Fulcrum
+    # cannot read .d at all. Instrument is normally just a score, so without this a
+    # Bruker-only preset stays on the menu for Orbitrap data and a user could pick it.
+    # Only filter when we actually know the instrument — an unknown instrument already
+    # forces the menu below.
+    excluded = []
+    if instrument:
+        keep = []
+        for w in pool:
+            if w["match"].get("instrument_required") and score_instrument(w["match"], instrument) == 0:
+                excluded.append({"id": w["id"],
+                                 "reason": f"requires {', '.join(w['match'].get('instruments', [])) or 'specific hardware'}"})
+            else:
+                keep.append(w)
+        pool = keep
+
     scored = []
     for w in pool:
         s = score_instrument(w["match"], instrument)
@@ -160,6 +177,7 @@ def do_match(args):
         "registry": reg,
         "selected": selected,
         "candidates": scored,
+        "excluded_for_instrument": excluded,
         "needs_menu": needs_menu,
         "unvalidated": unvalidated,
         "reason": (

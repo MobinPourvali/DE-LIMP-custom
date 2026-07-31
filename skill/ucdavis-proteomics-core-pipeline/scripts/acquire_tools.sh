@@ -47,6 +47,7 @@ asset_url_tag() { # owner/repo  tag  pattern
 }
 
 DIANN_CMD="null"; SAGE_CMD="null"; FRAGPIPE_CMD="null"; ALPHADIA_CMD="null"; NOTES=()
+RADIANT_CMD="null"; RADIANT_RUNTIME=""; RADIANT_IMAGE=""; RADIANT_VER=""
 SAGE_VER="${PIN_VERSION:-latest}"; DIANN_VER="${PIN_VERSION:-latest}"
 
 # Only honor PIN_VERSION for the engine it names.
@@ -136,6 +137,59 @@ acquire_diann() {
   fi
 }
 
+# ------------------------------------------------- Radiant DIA + Fulcrum ------
+# Seer ships Radiant only as a container image (multi-arch: linux/amd64 +
+# linux/arm64), so there is no native binary to fetch on any platform. We record
+# the RUNTIME and IMAGE separately because run_search.py has to inject bind mounts
+# for the inputs, and docker (-v) and apptainer (--bind) spell those differently.
+acquire_radiant() {
+  local ver; ver="latest"; pin_for radiant && ver="$PIN_VERSION"
+  RADIANT_VER="$ver"
+  local image="seerbio/radiant-fulcrum:$ver"
+
+  # LICENSE: Apache-2.0 with a MANDATORY GRANT-BACK and the COMMONS CLAUSE, which
+  # removes the right to "Sell" the software or a service whose value derives
+  # substantially from it. That is a real question for a fee-for-service core --
+  # surface it rather than letting a run imply it was cleared.
+  NOTES+=("Radiant/Fulcrum LICENSE: Apache-2.0 + Commons Clause + mandatory grant-back (https://github.com/seerbio/radiant-fulcrum-container/blob/main/LICENSE.md). The Commons Clause restricts SELLING a service whose value derives substantially from the software -- confirm with your institution before using it for fee-for-service work. DIA-NN Academia and FragPipe have their own separate terms.")
+
+  case "$CLASS" in
+    hpc)
+      # Prefer an existing .sif; do NOT auto-build one (a docker->apptainer
+      # conversion pulls ~3 GB and needs a writable cache -- not a login-node job).
+      local RS sif=""
+      for RS in /quobyte/proteomics-grp/apptainers /quobyte/proteomics-grp/radiant; do
+        [ -d "$RS" ] || continue
+        if [ "$ver" != "latest" ]; then
+          sif="$(ls -1 "$RS"/*radiant*"$ver"*.sif 2>/dev/null | sort -V | tail -n1)"
+        else
+          sif="$(ls -1 "$RS"/*radiant*fulcrum*.sif 2>/dev/null | sort -V | tail -n1)"
+        fi
+        [ -n "$sif" ] && break
+      done
+      if [ -n "$sif" ] && have apptainer; then
+        RADIANT_CMD="apptainer exec"; RADIANT_RUNTIME="apptainer"; RADIANT_IMAGE="$sif"
+        NOTES+=("Radiant $ver: reusing HIVE container $sif.")
+        return
+      fi
+      NOTES+=("Radiant $ver: no .sif found under /quobyte/proteomics-grp/{apptainers,radiant}. Build one ON A COMPUTE NODE (never the login node): 'srun -c 8 --mem 16G --pty apptainer build radiant-fulcrum-$ver.sif docker://$image', then re-run acquire_tools.sh.")
+      ;;
+    mac|linux)
+      if have docker; then
+        RADIANT_CMD="docker run --rm"; RADIANT_RUNTIME="docker"; RADIANT_IMAGE="$image"
+        NOTES+=("Radiant $ver: using Docker image $image (multi-arch; runs natively on Apple Silicon and x86). First run pulls ~3 GB.")
+        return
+      fi
+      if have apptainer; then
+        RADIANT_CMD="apptainer exec"; RADIANT_RUNTIME="apptainer"; RADIANT_IMAGE="docker://$image"
+        NOTES+=("Radiant $ver: no Docker; will let Apptainer pull $image on first use (~3 GB).")
+        return
+      fi
+      NOTES+=("Radiant $ver: needs Docker or Apptainer -- Seer ships no native binary. Install Docker (https://docs.docker.com/get-docker/) and re-run.")
+      ;;
+  esac
+}
+
 # ------------------------------------------------------------- FragPipe -------
 acquire_fragpipe() {
   local ver tag; ver="latest"; tag=""
@@ -197,6 +251,10 @@ if [ "${PIN_ENGINE:-}" = "alphadia" ] || have alphadia \
    || { [ "$CLASS" = "hpc" ] && [ -f /quobyte/proteomics-grp/apptainers/alphadia.sif ]; }; then
   acquire_alphadia
 fi
+# Radiant: a ~3 GB image pull, so only when pinned/requested or already available.
+if [ "${PIN_ENGINE:-}" = "radiant" ] || [ "${ACQUIRE_RADIANT:-}" = "1" ]; then
+  acquire_radiant
+fi
 
 # ---- write manifest ----------------------------------------------------------
 esc() { printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'; }
@@ -205,7 +263,10 @@ esc() { printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'; }
   printf '  "platform_class": "%s",\n' "$CLASS"
   printf '  "tools_root": "%s",\n' "$(esc "$ROOT")"
   printf '  "pinned": {"engine": "%s", "version": "%s"},\n' "${PIN_ENGINE:-}" "${PIN_VERSION:-}"
-  printf '  "versions": {"diann": "%s", "sage": "%s"},\n' "$(esc "$DIANN_VER")" "$(esc "$SAGE_VER")"
+  printf '  "versions": {"diann": "%s", "sage": "%s", "radiant": "%s"},\n' "$(esc "$DIANN_VER")" "$(esc "$SAGE_VER")" "$(esc "${RADIANT_VER:-}")"
+  printf '  "radiant":  %s,\n'  "$( [ "${RADIANT_CMD:-null}" = null ]  && echo null || printf '"%s"' "$(esc "${RADIANT_CMD}")" )"
+  printf '  "radiant_runtime": %s,\n' "$( [ -z "${RADIANT_RUNTIME:-}" ] && echo null || printf '"%s"' "$(esc "${RADIANT_RUNTIME}")" )"
+  printf '  "radiant_image":   %s,\n' "$( [ -z "${RADIANT_IMAGE:-}" ]   && echo null || printf '"%s"' "$(esc "${RADIANT_IMAGE}")" )"
   printf '  "diann":    %s,\n'  "$( [ "$DIANN_CMD" = null ]    && echo null || printf '"%s"' "$(esc "$DIANN_CMD")" )"
   printf '  "sage":     %s,\n'  "$( [ "$SAGE_CMD" = null ]     && echo null || printf '"%s"' "$(esc "$SAGE_CMD")" )"
   printf '  "fragpipe": %s,\n'  "$( [ "$FRAGPIPE_CMD" = null ] && echo null || printf '"%s"' "$(esc "$FRAGPIPE_CMD")" )"

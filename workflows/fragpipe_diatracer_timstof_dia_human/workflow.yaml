@@ -30,6 +30,9 @@ match:
   instrument_aliases: ["timstof", "tims"]   # lowercase substrings vs the detected name
   organism: "Homo sapiens"
   organism_taxid: 9606                      # hard filter
+  # diaTracer is Bruker-only: it converts dia-PASEF .d into pseudo-MS/MS.
+  # Drop this bundle for non-timsTOF hardware rather than merely down-scoring it.
+  instrument_required: true
 
 engine:
   name: fragpipe
