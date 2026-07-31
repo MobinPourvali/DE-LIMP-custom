@@ -238,9 +238,206 @@ def adapt_alphadia(out):
     return report
 
 
+# -------------------------------------------------- Radiant DIA + Fulcrum -----
+# Seer ships Radiant only as a container, and the container CLI reads mzML or
+# Parquet -- NOT Bruker .d and NOT Thermo .raw (verified against
+# radiant_fulcrum_search/search.py in the 2.3.3 image). So this route is scoped to
+# Thermo Orbitrap DIA with a .raw -> mzML conversion in front of it.
+#
+# Radiant also always needs a spectral library: the `--libfree` flag is a MISNOMER
+# -- in the click definition it is the same switch as `--no-mbr`
+# ("--mbr/--no-mbr", "--no-libfree/--libfree"), so it selects single-pass vs
+# match-between-runs and has nothing to do with running without a library.
+# `--library` is `required=True` either way. We generate that library with DIA-NN's
+# predictor, because Radiant's TSV reader takes DIA-NN's library schema directly
+# (FragLibTsvReader test fixture header == DIA-NN report-lib.tsv columns).
+
+def _container_argv(tools, mounts, inner):
+    """Build a docker/apptainer invocation, binding each host dir given in `mounts`.
+
+    mounts: list of (host_dir, container_dir). Docker and Apptainer spell bind
+    mounts differently, which is why acquire_tools.sh records the runtime.
+    """
+    prefix = tools.get("radiant")
+    runtime = tools.get("radiant_runtime")
+    image = tools.get("radiant_image")
+    if not (prefix and runtime and image):
+        sys.exit("tools.json has no usable Radiant runtime/image. Re-run:\n"
+                 "  ACQUIRE_RADIANT=1 PIN_ENGINE=radiant PIN_VERSION=<ver> "
+                 "bash scripts/acquire_tools.sh <platform_class>")
+    flag = "-v" if runtime == "docker" else "--bind"
+    argv = prefix.split()
+    for host, cont in mounts:
+        argv += [flag, f"{os.path.abspath(host)}:{cont}"]
+    argv += [image] + inner
+    return argv
+
+
+def radiant_library(tools, fasta, out, threads, params=None):
+    """Generate the DIA-NN predicted spectral library that Radiant searches against.
+
+    Reuses the skill's own DIA-NN acquisition rather than adding a second predictor.
+    `--out-lib` with a .tsv extension makes DIA-NN emit the TSV library schema that
+    Radiant's FragLibTsvReader expects; we verify the header rather than trust it.
+    """
+    lib = os.path.join(out, "radiant_lib", "diann_predicted_lib.tsv")
+    if os.path.exists(lib) and os.path.getsize(lib) > 1000:
+        print(f"  [radiant] reusing existing DIA-NN library {lib}")
+        return lib
+    dn = tools.get("diann")
+    if not dn:
+        sys.exit("Radiant needs a DIA-NN predicted spectral library, but tools.json has "
+                 "no DIA-NN command. Acquire DIA-NN first (it is the library generator "
+                 "for this route), or pass --library with an existing DIA-NN .tsv library.")
+    os.makedirs(os.path.dirname(lib), exist_ok=True)
+    cfg = f"--cfg {shlex.quote(params)} " if params and os.path.exists(params) else ""
+    sh(f"{dn} {cfg}--fasta {shlex.quote(fasta)} --fasta-search --predictor --gen-spec-lib "
+       f"--out-lib {shlex.quote(lib)} --threads {threads}")
+    if not os.path.exists(lib) or os.path.getsize(lib) < 1000:
+        sys.exit(f"DIA-NN did not produce a usable library at {lib}.")
+    with open(lib, "r", errors="replace") as fh:
+        header = fh.readline()
+    needed = {"PrecursorMz", "ProductMz", "LibraryIntensity", "ModifiedPeptide"}
+    missing = needed - set(header.rstrip("\n").split("\t"))
+    if missing:
+        sys.exit(f"{lib} is not a DIA-NN TSV library — missing columns {sorted(missing)}.\n"
+                 f"  Radiant reads DIA-NN's library schema; check the --out-lib extension.")
+    print(f"  [radiant] DIA-NN predicted library -> {lib}")
+    return lib
+
+
+def run_radiant(tools, params, files, fasta, out, threads, sbatch, library=None, mbr=False):
+    os.makedirs(out, exist_ok=True)
+    bad = [f for f in files if f.rstrip("/").lower().endswith(".d")]
+    if bad:
+        sys.exit("Radiant/Fulcrum does not read Bruker .d in this container — it takes "
+                 "mzML or Parquet. This route is for Thermo Orbitrap DIA.\n"
+                 f"  Bruker inputs: {bad}\n"
+                 "  Use the DIA-NN or FragPipe/diaTracer route for timsTOF data.")
+    mzml = ensure_mzml(files, out)          # .raw -> mzML (msconvert), same path Sage uses
+    lib = library or radiant_library(tools, fasta, out, threads, params)
+
+    results = os.path.join(out, "radiant_results")
+    os.makedirs(results, exist_ok=True)
+
+    # Bind each distinct host directory the container must see. Mounting parents
+    # (rather than copying) keeps large mzML in place.
+    mounts, cmap = [], {}
+    def cpath(host, tag):
+        d = os.path.dirname(os.path.abspath(host))
+        if d not in cmap:
+            cmap[d] = f"/mnt/{tag}{len(cmap)}"
+            mounts.append((d, cmap[d]))
+        return f"{cmap[d]}/{os.path.basename(host)}"
+
+    c_lib, c_fa = cpath(lib, "in"), cpath(fasta, "in")
+    c_files = [cpath(f, "in") for f in mzml]
+    c_res = "/mnt/results"
+    mounts.append((results, c_res))
+
+    inner = ["radiant_fulcrum", "-v",
+             "--mbr" if mbr else "--libfree",
+             "--library", c_lib, "--fasta", c_fa,
+             "--results-dir", c_res, "--threads", str(threads)]
+    if params and params.lower().endswith((".radiantconfig", ".toml", ".pythiaconfig")):
+        inner += ["--config", cpath(params, "in")]
+    inner += c_files
+
+    argv = _container_argv(tools, mounts, inner)
+    full = " ".join(shlex.quote(x) for x in argv)
+    if sbatch:
+        emit_sbatch(sbatch, full, out, threads, job="radiant_search")
+        return {"engine": "radiant", "out": out, "submitted": sbatch, "ran": False}
+    sh(full)
+    report = adapt_radiant(out)
+    return {"engine": "radiant", "report": report, "ran": True, "library": lib}
+
+
+def adapt_radiant(out):
+    """Fulcrum `combined` output -> the report.parquet contract.
+
+    Fulcrum's combined backend already emits DIA-NN-style column names (Run,
+    Protein.Group, PG.Quantity/PG.Normalised, Q.Value, Global.PG.Q.Value ...), but
+    writes them as a SPARK PARQUET DIRECTORY of part-files, not a single file --
+    so read it as a dataset.
+    """
+    try:
+        import pyarrow.parquet as pq, pyarrow as pa, pyarrow.dataset as ds
+    except ImportError:
+        sys.exit("pyarrow required to adapt Radiant output. pip install pyarrow.")
+
+    # Fulcrum writes a DIRECTORY of spark part-files, so _find() (files only) can't
+    # locate it — walk for the directory name instead. A single-file parquet is
+    # accepted too, in case a future backend writes one.
+    root = None
+    for cand in ("fulcrum-results", "fulcrum-proteins"):
+        for dp, dns, fns in os.walk(out):
+            if cand in dns:
+                root = os.path.join(dp, cand)
+                break
+            if cand in fns:
+                root = os.path.join(dp, cand)
+                break
+        if root:
+            break
+    if not root:
+        sys.exit(f"No fulcrum-results/ under {out}. Did the Fulcrum workflow finish? "
+                 f"Check the Radiant logs in {out}.")
+
+    t = ds.dataset(root, format="parquet").to_table()
+    cols = {c.lower(): c for c in t.column_names}
+
+    def col(*cands):
+        for c in cands:
+            if c.lower() in cols:
+                return cols[c.lower()]
+        return None
+
+    c_run = col("Run", "filename", "File.Name")
+    c_pg = col("Protein.Group", "ProteinGroup", "PG")
+    # Prefer the normalised protein-group quantity; that is the MaxLFQ analogue here.
+    c_int = col("PG.Normalised", "PG.Quantity", "PG.MaxLFQ", "Precursor.Normalised",
+                "Precursor.Quantity")
+    if not all([c_run, c_pg, c_int]):
+        sys.exit(f"Radiant output missing expected columns; saw {t.column_names}")
+    c_q = col("Global.PG.Q.Value", "Q.Value")
+
+    runs = [os.path.splitext(os.path.basename(str(r)))[0] for r in t.column(c_run).to_pylist()]
+    pgs = [str(p) for p in t.column(c_pg).to_pylist()]
+    vals = t.column(c_int).to_pylist()
+    qs = t.column(c_q).to_pylist() if c_q else [0.0] * len(pgs)
+
+    # The combined report is PSM-level (many precursors per protein x run); collapse
+    # to one protein x run row, keeping the best q-value seen.
+    best = {}
+    for r, p, v, q in zip(runs, pgs, vals, qs):
+        if v is None:
+            continue
+        k = (r, p)
+        prev = best.get(k)
+        qq = float(q) if q is not None else 0.0
+        if prev is None or float(v) > prev[0]:
+            best[k] = (float(v), min(qq, prev[1]) if prev else qq)
+        else:
+            best[k] = (prev[0], min(prev[1], qq))
+
+    runs2 = [k[0] for k in best]
+    pgs2 = [k[1] for k in best]
+    ints = [v[0] for v in best.values()]
+    qv = [v[1] for v in best.values()]
+    n = len(pgs2)
+    report = os.path.join(out, "report.parquet")
+    pq.write_table(pa.table({
+        "Run": runs2, "Protein.Group": pgs2, "PG.MaxLFQ": ints,
+        "Q.Value": qv, "Lib.Q.Value": qv, "Lib.PG.Q.Value": qv,
+    }), report)
+    print(f"  [adapt] Radiant/Fulcrum -> {report}  ({n} protein×run rows)")
+    return report
+
+
 # ------------------------------------------------------------------- Sage -----
 def ensure_mzml(files, out):
-    """Sage is mzML-first. Convert .d/.raw via msconvert if present."""
+    """mzML-first engines (Sage, Radiant). Convert .d/.raw via msconvert if present."""
     msconvert = shutil.which("msconvert")
     converted, need = [], []
     for f in files:
@@ -531,7 +728,11 @@ def main():
     ap.add_argument("--out", default="search_out")
     ap.add_argument("--files", nargs="+", required=True)
     ap.add_argument("--threads", type=int, default=8)
-    ap.add_argument("--engine", choices=["diann", "alphadia", "sage", "fragpipe"])
+    ap.add_argument("--engine", choices=["diann", "alphadia", "sage", "fragpipe", "radiant"])
+    ap.add_argument("--library", help="Radiant: an existing DIA-NN .tsv spectral library. "
+                                      "Omit and one is generated with DIA-NN's predictor.")
+    ap.add_argument("--mbr", action="store_true",
+                    help="Radiant: run match-between-runs (two-pass) instead of single-pass")
     ap.add_argument("--sbatch", help="emit an sbatch script at this path instead of running inline")
     ap.add_argument("--parallel-threshold", type=int, default=5,
                     help="DIA-NN: use the 5-step SLURM chain above this many files (default 5)")
@@ -553,7 +754,8 @@ def main():
 
     if a.adapt_only:
         report = {"sage": adapt_sage, "fragpipe": adapt_fragpipe,
-                  "alphadia": adapt_alphadia}.get(engine, lambda o: None)(a.out)
+                  "alphadia": adapt_alphadia,
+                  "radiant": adapt_radiant}.get(engine, lambda o: None)(a.out)
         print(json.dumps({"engine": engine, "report": report, "ran": False, "adapt_only": True}, indent=2))
         return
 
@@ -580,6 +782,11 @@ def main():
         res = run_sage(cmd, a.params, files, a.fasta, a.out, a.threads, a.sbatch)
     elif engine == "fragpipe":
         res = run_fragpipe(cmd, bundle, a.params, files, a.fasta, a.out, a.threads, a.sbatch)
+    elif engine == "radiant":
+        # Takes the whole tools dict: it needs the container runtime + image to build
+        # bind mounts, and DIA-NN to generate the spectral library.
+        res = run_radiant(tools, a.params, files, a.fasta, a.out, a.threads, a.sbatch,
+                          library=a.library, mbr=a.mbr)
     else:
         sys.exit(f"unknown engine {engine}")
 

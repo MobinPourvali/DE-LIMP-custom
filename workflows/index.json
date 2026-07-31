@@ -5,7 +5,7 @@
   "workflows": [
     {
       "id": "diann_astral_dia_human",
-      "name": "DIA-NN — Orbitrap Astral narrow-window DIA (human)",
+      "name": "DIA-NN \u2014 Orbitrap Astral narrow-window DIA (human)",
       "path": "workflows/diann_astral_dia_human",
       "match": {
         "acquisition": "DIA",
@@ -48,7 +48,7 @@
     },
     {
       "id": "diann_timstof_dia_mouse",
-      "name": "DIA-NN — Bruker timsTOF dia-PASEF (mouse)",
+      "name": "DIA-NN \u2014 Bruker timsTOF dia-PASEF (mouse)",
       "path": "workflows/diann_timstof_dia_mouse",
       "match": {
         "acquisition": "DIA",
@@ -91,7 +91,7 @@
     },
     {
       "id": "fragpipe_diatracer_timstof_dia_human",
-      "name": "FragPipe + diaTracer — Bruker timsTOF dia-PASEF (human)",
+      "name": "FragPipe + diaTracer \u2014 Bruker timsTOF dia-PASEF (human)",
       "path": "workflows/fragpipe_diatracer_timstof_dia_human",
       "match": {
         "acquisition": "DIA",
@@ -107,7 +107,8 @@
           "tims"
         ],
         "organism": "Homo sapiens",
-        "organism_taxid": 9606
+        "organism_taxid": 9606,
+        "instrument_required": true
       },
       "engine": {
         "name": "fragpipe",
@@ -139,7 +140,7 @@
     },
     {
       "id": "sage_timstof_dda_human",
-      "name": "Sage — timsTOF ddaPASEF (human)",
+      "name": "Sage \u2014 timsTOF ddaPASEF (human)",
       "path": "workflows/sage_timstof_dda_human",
       "match": {
         "acquisition": "DDA",
@@ -181,6 +182,116 @@
         "by": "Brett Phinney",
         "dataset": "HeLa ddaPASEF QC (CONFIRM)",
         "notes": "Sage > DIA-NN on timsTOF DDA in core testing (~2x PSMs). See VALIDATION for the .d->mzML and Sage->DE adapter steps."
+      }
+    },
+    {
+      "id": "fragpipe_dia_thermo_human",
+      "name": "FragPipe DIA \u2014 Thermo Orbitrap (human)",
+      "path": "workflows/fragpipe_dia_thermo_human",
+      "description": "FragPipe's DIA route for Thermo Orbitrap data: MSFragger-DIA -> EasyPQP -> DIA-NN quant. NOT the diaTracer route -- diaTracer converts Bruker dia-PASEF .d into pseudo-MS/MS and is switched OFF here (diatracer.run-diatracer=false). Use fragpipe_diatracer_timstof_dia_human for timsTOF.",
+      "match": {
+        "acquisition": "DIA",
+        "instruments": [
+          "Orbitrap Astral",
+          "Orbitrap Exploris 480",
+          "Orbitrap Eclipse",
+          "Orbitrap Fusion Lumos",
+          "Q Exactive HF-X",
+          "Orbitrap Exploris 240"
+        ],
+        "instrument_aliases": [
+          "astral",
+          "exploris",
+          "orbitrap",
+          "lumos",
+          "eclipse",
+          "q exactive"
+        ],
+        "organism": "Homo sapiens",
+        "organism_taxid": 9606,
+        "instrument_required": true
+      },
+      "engine": {
+        "name": "fragpipe",
+        "version": "24.0"
+      },
+      "fasta": {
+        "uniprot_proteome": "UP000005640",
+        "add_contaminants": true
+      },
+      "search": {
+        "estimate_params": false,
+        "var_mods": "",
+        "param_overrides": {},
+        "params_file": "DIA_SpecLib_Quant.workflow",
+        "extra_files": []
+      },
+      "de": {
+        "method": "maxlfq",
+        "q_cutoff": 0.01,
+        "logfc": 1.0,
+        "adjp": 0.05
+      },
+      "validated": {
+        "date": "",
+        "by": "",
+        "dataset": "",
+        "notes": "NOT VALIDATED. Parameters are FragPipe 24.0's own bundled DIA_SpecLib_Quant preset, copied unmodified from Nesvilab/FragPipe@master. It differs from the diaPASEF preset in more than the diaTracer switch -- MBR off, 1 missed cleavage, precursor charge >=2, +/-20 ppm precursor tolerance, topN 1000 -- so do NOT treat the two as interchangeable. The first run IS the validation run: compare against the DIA-NN route on the same files with compare_searches.py and record the outcome here.\n"
+      }
+    },
+    {
+      "id": "radiant_orbitrap_dia_human",
+      "name": "Radiant DIA + Fulcrum \u2014 Thermo Orbitrap (human)",
+      "path": "workflows/radiant_orbitrap_dia_human",
+      "description": "Seer's Radiant DIA peptide-centric search inside the Fulcrum Pipeline, run from seerbio/radiant-fulcrum. THERMO ORBITRAP ONLY: the container reads mzML or Parquet, so .raw is converted with msconvert first and Bruker .d is refused. Radiant always needs a spectral library -- one is generated with DIA-NN's predictor, whose TSV schema Radiant reads natively. LICENSE: Apache-2.0 + Commons Clause (restricts selling a service derived from it) + mandatory grant-back.",
+      "match": {
+        "acquisition": "DIA",
+        "instruments": [
+          "Orbitrap Astral",
+          "Orbitrap Exploris 480",
+          "Orbitrap Eclipse",
+          "Orbitrap Fusion Lumos",
+          "Q Exactive HF-X",
+          "Orbitrap Exploris 240"
+        ],
+        "instrument_aliases": [
+          "astral",
+          "exploris",
+          "orbitrap",
+          "lumos",
+          "eclipse",
+          "q exactive"
+        ],
+        "organism": "Homo sapiens",
+        "organism_taxid": 9606,
+        "instrument_required": true
+      },
+      "engine": {
+        "name": "radiant",
+        "version": "2.3.3"
+      },
+      "fasta": {
+        "uniprot_proteome": "UP000005640",
+        "add_contaminants": true
+      },
+      "search": {
+        "estimate_params": false,
+        "var_mods": "",
+        "param_overrides": {},
+        "params_file": "default.radiantConfig",
+        "extra_files": []
+      },
+      "de": {
+        "method": "maxlfq",
+        "q_cutoff": 0.01,
+        "logfc": 1.0,
+        "adjp": 0.05
+      },
+      "validated": {
+        "date": "",
+        "by": "",
+        "dataset": "",
+        "notes": "NOT VALIDATED. default.radiantConfig is the container's own shipped default (radiant_fulcrum_workflow 0.3.3), copied unmodified -- 20 ppm MS1/MS2 extraction, which suits Orbitrap but has not been tuned for Astral's narrow windows. Multi-file runs are SERIAL (the search backend raises NotImplementedError for parallel mode), so budget accordingly. The first run IS the validation run: compare against DIA-NN on the same files with compare_searches.py and record the outcome here.\n"
       }
     }
   ]

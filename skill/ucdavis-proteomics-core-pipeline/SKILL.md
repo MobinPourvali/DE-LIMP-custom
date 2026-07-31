@@ -294,10 +294,54 @@ python3 scripts/fetch_workflows.py match \
     --acquisition DIA --organism-taxid 9606 --instrument "Orbitrap Astral"
 ```
 Hard-filters on acquisition+taxid, scores instrument, returns `selected` +
-`candidates` + `needs_menu`. **Present `selected` to the user** — name, engine +
-pinned version, FASTA, DE method, and the `validated` provenance — and get
-confirmation. If `needs_menu` is true (no match / tie / no instrument info),
-present `candidates` as a menu instead of auto-proceeding.
+`candidates` + `needs_menu` + `excluded_for_instrument`. **Present `selected` to the
+user** — name, engine + pinned version, FASTA, DE method, and the `validated`
+provenance — and get confirmation. If `needs_menu` is true (no match / tie / no
+instrument info / unvalidated pick), present `candidates` as a menu instead of
+auto-proceeding.
+
+#### 4a. DIA: ASK which of the three search engines to use
+
+For DIA there are **three** routes, and you must **ask the user which one they
+want** rather than silently taking the top match:
+
+| Route | Engine | Instruments | Notes |
+|---|---|---|---|
+| **DIA-NN** — *the default* | `diann` | Thermo + Bruker | Reads `.raw` and `.d` natively. The validated Core route. |
+| **FragPipe DIA** | `fragpipe` | Thermo *or* Bruker — **different presets** | Thermo → `DIA_SpecLib_Quant`. Bruker → `DIA_SpecLib_Quant_diaPASEF` **with diaTracer**. Not interchangeable. |
+| **Radiant + Fulcrum** | `radiant` | **Thermo Orbitrap only** | Container reads mzML/Parquet, so `.raw` is converted first and Bruker `.d` is refused. Needs a DIA-NN-generated library. Licence-restricted — see below. |
+
+- **If the user doesn't know, use DIA-NN.** Say that's what you're doing and why
+  (native vendor-format reading, and the route the Core has validated). Don't make
+  them adjudicate a tooling question to get their proteins.
+- **diaTracer is Bruker-only.** It converts dia-PASEF `.d` into pseudo-MS/MS
+  spectra; it has no role on Thermo data and is switched off in the Thermo preset
+  (`diatracer.run-diatracer=false`). The two FragPipe presets also differ in MBR,
+  missed cleavages, precursor charge, mass tolerance, and topN peaks — never swap
+  one for the other by flipping the diaTracer flag.
+- `excluded_for_instrument` lists bundles dropped because they are hardware-specific
+  (`match.instrument_required`). **Mention them and why** — a user asking for
+  "FragPipe" on Orbitrap data should hear that the diaTracer preset was excluded
+  because it's for timsTOF, not silently get a different answer.
+- **Radiant licence:** Apache-2.0 **+ Commons Clause + mandatory grant-back**. The
+  Commons Clause restricts *selling* a service whose value derives substantially
+  from the software. **Say this before running it for anything fee-for-service** —
+  it surfaces in `tools.json` `notes` too. Don't advise on the legal question;
+  point at it and let them decide.
+
+#### 4b. Offer to run all three and compare
+
+After they pick, **offer the bake-off**: run two or three routes on the same files
+and compare which performed better. Say roughly what it costs (each route is a full
+search; Radiant is **serial** across files) so it's an informed choice.
+
+If they accept: run each route into its **own session**, then compare with
+`compare_searches.py` + `make_comparison_report.py` (step 11c). **Hold everything
+except the search constant** — same FASTA, same organism, same conditions, and push
+every engine's report through `run_de.R` with identical `--method`, contrasts, and
+thresholds, so the search is the only variable. Name the version gap out loud:
+FragPipe 24 bundles DIA-NN 1.8.2 beta 8, two majors behind what `diann_*` pins.
+→ detail: `references/cross-tool-comparison.md`.
 
 **If zero candidates** (the registry only covers a few organisms — anything else
 lands here), say so plainly and offer to continue **unvalidated**: run the same
@@ -330,7 +374,15 @@ PIN_ENGINE=diann PIN_VERSION=2.6.0 bash scripts/acquire_tools.sh <platform_class
 ```
 Reads/writes `~/.proteomics-pipeline/tools/tools.json`. On HIVE it reuses the
 existing `.sif`; on mac it uses Docker for DIA-NN. **Read `tools.json` `notes`** —
-license gates (FragPipe) and missing-runtime warnings surface there.
+license gates (FragPipe, Radiant) and missing-runtime warnings surface there.
+
+Radiant is a ~3 GB image pull, so it is **not** acquired unless asked for:
+```
+ACQUIRE_RADIANT=1 PIN_ENGINE=radiant PIN_VERSION=2.3.3 bash scripts/acquire_tools.sh <platform_class>
+```
+It needs Docker or Apptainer — Seer ships no native binary. On HIVE the `.sif` must
+already exist; building one pulls ~3 GB and **must run on a compute node, never the
+login node** (the note in `tools.json` gives the exact `srun apptainer build` line).
 
 ### 6. Build the FASTA
 Use the proteome, database type, and contaminant set the **user confirmed in
@@ -390,7 +442,31 @@ python3 scripts/run_search.py --tools ~/.proteomics-pipeline/tools/tools.json \
     --bundle ./wf/workflow.manifest.json --params ./wf/params.<cfg|json> \
     --fasta ./search.fasta --out ./search_out --files /path/to/*.d --threads 16
 ```
-- DIA → DIA-NN; DDA → Sage; FragPipe only if the bundle names it or the user asks.
+- DIA → whichever of the three routes the user chose in step 4a (**default DIA-NN**);
+  DDA → Sage; FragPipe/Radiant when the bundle names them or the user asks.
+- **Radiant + Fulcrum (Thermo Orbitrap DIA).** Add `--engine radiant`:
+  ```
+  python3 scripts/run_search.py --tools ~/.proteomics-pipeline/tools/tools.json \
+      --bundle ./wf/workflow.manifest.json --params ./wf/default.radiantConfig \
+      --fasta ./search.fasta --out ./search_out --files /path/to/*.raw \
+      --engine radiant --threads 16
+  ```
+  - **Thermo only.** Bruker `.d` is refused with an error pointing at the DIA-NN or
+    diaTracer route. `.raw` is converted to mzML first via the same `msconvert` path
+    Sage uses — on a Mac that means no local conversion, so run it on HIVE/Linux
+    (→ `references/install.md`).
+  - **A spectral library is always required**, and `run_search.py` generates one with
+    **DIA-NN's predictor** (`--fasta-search --predictor --gen-spec-lib --out-lib
+    …tsv`) because Radiant reads DIA-NN's library TSV schema natively. Pass
+    `--library` to reuse an existing DIA-NN `.tsv` library instead. This means the
+    Radiant route **also needs DIA-NN acquired**.
+  - ⚠ **`--libfree` is a misnomer.** In Radiant's CLI it is the same switch as
+    `--no-mbr`, so it selects single-pass vs match-between-runs — it does **not**
+    mean "no library". Use `--mbr` for the two-pass route.
+  - Multi-file runs are **serial** (the search backend raises `NotImplementedError`
+    for parallel mode), so wall-clock scales linearly with file count. Budget for it,
+    and prefer `--sbatch` on HIVE.
+  - Licence: Apache-2.0 + **Commons Clause** + mandatory grant-back — see step 4a.
 - **FragPipe + diaTracer (timsTOF dia-PASEF, spectrum-centric DIA).** A second DIA route,
   used when the bundle names it or the user asks for it. diaTracer traces 3-D features and
   writes pseudo-MS/MS spectra, MSFragger searches those to build a library from the data
