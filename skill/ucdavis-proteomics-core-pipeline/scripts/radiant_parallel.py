@@ -50,6 +50,24 @@ def container_prefix(runtime, image, pairs):
     return f"apptainer exec {_mounts_for(runtime, pairs)} {shlex.quote(image)}"
 
 
+def detect_queue(partition, account, qos):
+    """Resolve the queue from the submitting user's own SLURM associations.
+
+    ONE definition: reuse run_search.slurm_queue() rather than re-deriving it. Emitting
+    no partition at all is not neutral -- SLURM then applies the cluster default, which
+    on HIVE is `high`, precisely the queue a non-facility account cannot submit to (the
+    job is REJECTED, not merely slowed). That is the bug emit_sbatch was fixed for; this
+    generator must not reintroduce it."""
+    try:
+        sys.path.insert(0, HERE)
+        from run_search import slurm_queue
+        return slurm_queue(partition, account, qos)
+    except Exception as e:
+        sys.stderr.write(f"[radiant_parallel] queue detection unavailable ({e}); "
+                         "emitting the caller's values verbatim\n")
+        return partition, account, qos
+
+
 def header(job, cpus, mem, hours, partition, account, qos, array=None):
     L = ["#!/bin/bash -l", f"#SBATCH --job-name={job}",
          f"#SBATCH --cpus-per-task={cpus}", f"#SBATCH --mem={mem}G",
@@ -132,7 +150,8 @@ def main():
         return f"{cmap[os.path.dirname(h)]}/{os.path.basename(h)}"
 
     prefix = container_prefix(a.runtime, a.image, pairs)
-    q = dict(partition=a.partition, account=a.account, qos=a.qos)
+    part, acct, qos = detect_queue(a.partition, a.account, a.qos)
+    q = dict(partition=part, account=acct, qos=qos)
 
     def write(name, text):
         p = os.path.join(D, name)
@@ -222,6 +241,7 @@ def main():
         "per_file_results": rdir,
         "toml": toml_path,
         "library": lib,
+        "queue": {"partition": part, "account": acct, "qos": qos},
         "submit": ("Submit with dependencies, e.g.:\n"
                    + ("  j1=$(sbatch --parsable step1_libpred.sbatch)\n"
                       "  j2=$(sbatch --parsable --dependency=afterok:$j1 step2_search.sbatch)\n"
