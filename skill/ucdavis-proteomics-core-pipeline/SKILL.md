@@ -291,8 +291,20 @@ session nests under `<prior>/reanalysis/<date>_<name>/`.
 ### 4. Match a validated workflow (then CONFIRM)
 ```
 python3 scripts/fetch_workflows.py match \
-    --acquisition DIA --organism-taxid 9606 --instrument "Orbitrap Astral"
+    --acquisition DIA --organism-taxid 9606 --instrument "Orbitrap Astral" \
+    [--engine diann]
 ```
+**If the user named an engine, you MUST pass `--engine`.** It is a hard filter. Without
+it the matcher returns the best workflow for the acquisition regardless of engine — so a
+user who asked for DIA-NN can be handed a FragPipe workflow with nothing saying so. If
+`wrong_engine_only` comes back true, no workflow uses the engine they asked for: say that
+plainly and let them choose between running their engine on estimated parameters or
+switching. **Never silently substitute a different engine.**
+
+Organism is a *preference*, not a gate — an exact-species workflow always wins, but a
+different-species one stays eligible because search parameters do not depend on species,
+only the FASTA does (and that comes from the user's own organism answer). When
+`cross_organism` is true, `selected.fasta_note` says so; surface it.
 Hard-filters on acquisition+taxid, scores instrument, returns `selected` +
 `candidates` + `needs_menu` + `excluded_for_instrument`. **Present `selected` to the
 user** — name, engine + pinned version, FASTA, DE method, and the `validated`
@@ -698,11 +710,33 @@ specific proteins, never fabricate. Make it thorough and expert, like the DE-LIM
 AI export. The brief takes its pipeline description from `de_provenance.json`, so
 the report stays correct for whichever engine/method ran.
 
-Then **also save the report as a Word document** (both formats are required):
+Then produce **both** delivery formats — a single self-contained HTML page and a
+Word document. Both are required; neither is optional.
+
 ```
+# 1. HTML — the DEFAULT deliverable. QC panels + figures + text in ONE file.
+python3 scripts/make_analysis_html.py --session <session> \
+    --title "<study name>" --out <session>/output/Analysis_Report.html
+
+# 2. Word — for circulation and track-changes
 python3 scripts/to_docx.py --in <session>/output/AI_Analysis_Report.md \
     --out <session>/output/AI_Analysis_Report.docx
 ```
+
+**Point the user at the HTML first.** Every figure is inlined as a data URI, so it is
+one file that opens by double-clicking in any browser on Windows, macOS or Linux, with
+no network, no Word, and nothing installed. That matters because the alternative —
+a report plus a `figures/` folder — silently loses every image the moment someone
+copies just the report, which is exactly what people do. Tell them the filename and
+that it is the whole report.
+
+The page puts the **QC panels above the results** on purpose: a volcano plot is equally
+persuasive whether or not the run was any good, so a reader who meets the biology first
+has already formed a conclusion before seeing the evidence about whether to trust it.
+Do not "improve" the order. It also counts significant proteins straight from the DE
+CSVs rather than restating the prose, so a disagreement between the two is visible
+rather than hidden.
+
 → detail: `references/analysis.md`.
 
 ### 9d. Publication-ready Methods section + acknowledgment

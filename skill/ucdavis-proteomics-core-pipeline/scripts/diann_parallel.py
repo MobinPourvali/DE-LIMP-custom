@@ -26,7 +26,7 @@ Usage:
       --raw /data/*.d --fasta /path/search.fasta --out ./diann_parallel \
       --cfg params.cfg [--threads-per-file 16] [--mem-per-file 64] [--time-per-file 2] \
       [--assembly-cpus 64] [--assembly-mem 128] [--assembly-time 12] \
-      [--partition high] [--account genome-center-grp] [--max-simultaneous 20] [--no-norm]
+      [--partition <auto>] [--account <auto>] [--max-simultaneous 20] [--no-norm]
 """
 import os, sys, glob, argparse, shlex, subprocess
 
@@ -145,8 +145,8 @@ def main():
                     "per-file passes out across the cluster against it.")
     ap.add_argument("--seed-dep", help="SLURM job id the first pass should wait for (afterok) — "
                     "e.g. the InfinDIA lib-build job that produces --seed-lib.")
-    ap.add_argument("--partition", default="high")
-    ap.add_argument("--account", default="genome-center-grp")
+    ap.add_argument("--partition")
+    ap.add_argument("--account")
     ap.add_argument("--qos", default=None, help="SLURM QOS. Needed for publicgrp/low "
                     "(publicgrp-low-qos); high/genome-center-grp uses its default.")
     ap.add_argument("--max-simultaneous", type=int, default=20)
@@ -163,6 +163,20 @@ def main():
     for p in a.raw:
         raws.extend(sorted(glob.glob(p)) or [p])
     raws = [os.path.abspath(r.rstrip("/")) for r in raws]
+
+    # Detect the queue from the submitting user's SLURM associations rather than
+    # assuming facility membership. genome-center-grp/high for members; publicgrp/low
+    # for everyone else (incl. class accounts) — where `high` caps at 8 CPUs/job, so a
+    # 32-CPU request would never start.
+    try:
+        sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+        from run_search import slurm_queue
+        a.partition, a.account, _q = slurm_queue(a.partition, a.account, None)
+        if not a.qos and a.partition == "low" and a.account == "publicgrp":
+            a.qos = "publicgrp-low-qos"
+    except Exception:
+        a.partition = a.partition or "low"
+        a.account = a.account or "publicgrp"
     n = len(raws)
     if n < 2:
         sys.exit("Parallel search needs >= 2 raw files (pass --raw or --raw-list); "
