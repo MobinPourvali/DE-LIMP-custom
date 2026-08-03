@@ -126,10 +126,24 @@ Radiant source (`seerbio/radiant`, internal name **Pythia**), not inferred from 
 - **A spectral library is always required.** `--library` is `required=True`, and
   **`--libfree` does not mean library-free** — in the click definition it is the
   same switch as `--no-mbr` (`"--mbr/--no-mbr", "--no-libfree/--libfree"`), so it
-  selects single-pass vs MBR. `run_search.py` generates the library with **DIA-NN's
-  predictor**; Radiant's `FragLibTsvReader` takes DIA-NN's library TSV schema
-  directly (its test fixture header is DIA-NN's `report-lib.tsv` columns verbatim).
-  So **this route needs DIA-NN acquired too**. `--library` reuses an existing one.
+  selects single-pass vs MBR. So **this route needs DIA-NN acquired too**.
+- **⚠ DIA-NN and Radiant share no library format directly** — verified on real runs,
+  and the reason `make_radiant_library.py` exists:
+  1. `--out-lib foo.tsv --predictor` does **not** write `foo.tsv`. DIA-NN ignores the
+     extension for predicted libraries and writes `foo.predicted.speclib`.
+  2. Radiant *does* read `.speclib`, but only **format v ≥ −3**
+     (`SpecLibSrc/Library.h`). DIA-NN 2.6 writes **v−11**, 2.x generally v−10, so
+     `RadiantDIA` aborts with `ERROR: version is not supported11`. Every speclib on
+     the UCD share is v−10/v−11.
+  3. DIA-NN **cannot emit TSV at all** — asked to convert to `.tsv` it silently
+     writes `.parquet`.
+  4. That parquet uses **dot-separated** names (`Precursor.Mz`, `Relative.Intensity`)
+     while Radiant wants concatenated ones (`PrecursorMz`, `LibraryIntensity`), so a
+     straight dump is unreadable.
+
+  `make_radiant_library.py` does predict → parquet → renamed TSV, and
+  `run_search.py` calls it automatically. A human proteome library is ~50 M rows /
+  ~10 GB of TSV.
 - **Multi-file runs are serial in Radiant itself** — the backend raises
   `NotImplementedError` for parallel mode. On a cluster the skill works around this
   (below), so this only bites on a single machine.
@@ -166,6 +180,23 @@ directory name is the contract between steps 2 and 3 — don't rename it.
 Step 2 skips any file whose `.radiantDIA` already exists, so a preempted
 `publicgrp/low` task requeues without redoing work, and step 3 refuses to rescore a
 partial set. `--no-parallel` forces the single serial search.
+
+**Feeding results to the DE-LIMP app.** `adapt_radiant` produces the skill's own DE
+contract (one row per protein×run, `PG.MaxLFQ`). DE-LIMP wants something different: its
+upload feeds `limpa::readDIANN()`, which is **precursor-level** and needs `Run`,
+`Precursor.Id`, `Precursor.Normalised`, `Protein.Group`, `Protein.Names`, `Genes`,
+`Proteotypic`, `Q.Value`, `Lib.Q.Value`, `Lib.PG.Q.Value`. Use
+`radiant_to_delimp.py --results <out>/radiant_results --library <lib.tsv> --out
+delimp_report.parquet` and upload that. It derives `Precursor.Id` from modified
+sequence + charge, maps the `Global.*` q-values onto the `Lib.*` names, and recovers
+`Protein.Names`/`Genes` from the library — Fulcrum drops them, and without the join
+DE-LIMP loses gene-level annotation (GSEA, gene labels). Pass `--library` or those
+columns are emitted empty rather than invented.
+
+**Run names.** Fulcrum reports `Run` as a URI of the per-file result
+(`file:///…/Sample.mzML.radiantDIA`). Both adapters reduce it to the bare `Sample`, so
+a `conditions.csv` keyed on sample names matches — a single `splitext` would leave
+`Sample.mzML` and silently fail group assignment.
 
 **Adapter.** Fulcrum's `combined` output backend already uses DIA-NN-style column
 names (`Run`, `Protein.Group`, `Precursor.Quantity`, `PG.Quantity`, `PG.Normalised`,

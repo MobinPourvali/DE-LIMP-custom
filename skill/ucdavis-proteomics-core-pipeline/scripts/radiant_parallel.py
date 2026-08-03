@@ -98,11 +98,17 @@ def main():
     ap.add_argument("--out", required=True)
     ap.add_argument("--library", help="DIA-NN .tsv library; generated in step 1 if omitted")
     ap.add_argument("--diann", help="DIA-NN command (needed only when --library is omitted)")
+    # Memory defaults are MEASURED, not guessed (3-run HeLa, 9.9 GB TSV library,
+    # 2026-08-03): each RadiantDIA task peaked at ~19 GB, Fulcrum at ~14 GB — roughly
+    # 2x the library size plus overhead. Over-requesting is not free: asking 200 GB
+    # made SLURM schedule the array tasks one at a time, turning a parallel array back
+    # into a near-serial queue (14 min wall vs 21 min serial, instead of ~7). Scale
+    # --mem-per-file with the library if you use a much larger one.
     ap.add_argument("--threads-per-file", type=int, default=16)
-    ap.add_argument("--mem-per-file", type=int, default=64)
+    ap.add_argument("--mem-per-file", type=int, default=32)
     ap.add_argument("--time-per-file", type=int, default=4)
     ap.add_argument("--fulcrum-cpus", type=int, default=32)
-    ap.add_argument("--fulcrum-mem", type=int, default=128)
+    ap.add_argument("--fulcrum-mem", type=int, default=48)
     ap.add_argument("--fulcrum-time", type=int, default=8)
     ap.add_argument("--libpred-cpus", type=int, default=16)
     ap.add_argument("--libpred-mem", type=int, default=64)
@@ -129,7 +135,13 @@ def main():
     rdir = os.path.join(results, "radiant-results")
     os.makedirs(D, exist_ok=True); os.makedirs(rdir, exist_ok=True)
 
-    lib = a.library or os.path.join(D, "diann_predicted_lib.tsv")
+    # DIA-NN IGNORES the extension given to --out-lib for a PREDICTED library and always
+    # writes <stem>.predicted.speclib (its compact binary format). Radiant reads .speclib
+    # directly (FragLibReader accepts .fragLibFF/.tsv/.csv/.speclib), so no conversion is
+    # needed -- but the filename must match what DIA-NN really produces or step 2 looks
+    # for a file that was never written.
+    lib_stem = os.path.join(D, "diann_predicted_lib")
+    lib = a.library or (lib_stem + ".predicted.speclib")
     listing = os.path.join(D, "file_list.txt")
     with open(listing, "w") as fh:
         fh.write("\n".join(os.path.abspath(f) for f in files) + "\n")
@@ -172,9 +184,13 @@ def main():
             header("r1_libpred", a.libpred_cpus, a.libpred_mem, a.libpred_time, **q), "",
             'echo "Step 1/3 DIA-NN library prediction"; date',
             f'{a.diann} --fasta {shlex.quote(os.path.abspath(a.fasta))} --fasta-search '
-            f'--predictor --gen-spec-lib --out-lib {shlex.quote(lib)} '
+            f'--predictor --gen-spec-lib --out-lib {shlex.quote(lib_stem)} '
             f'--threads {a.libpred_cpus}',
-            f'test -s {shlex.quote(lib)} || {{ echo "no library produced"; exit 1; }}']))
+            # Check for what DIA-NN ACTUALLY writes, and say what it did write if absent.
+            f'if [ ! -s {shlex.quote(lib)} ]; then',
+            f'  echo "expected {os.path.basename(lib)}; DIA-NN wrote:"; ls -la {shlex.quote(D)}',
+            f'  exit 1',
+            f'fi']))
 
     # ---- step 2: one RadiantDIA per file (array) --------------------------------
     n = len(files)

@@ -273,37 +273,62 @@ def _container_argv(tools, mounts, inner):
     return argv
 
 
-def radiant_library(tools, fasta, out, threads, params=None):
-    """Generate the DIA-NN predicted spectral library that Radiant searches against.
+# Radiant's library loader accepts exactly these four, dispatching on the suffix
+# (FragLibReader.cpp: FRAG_LIB_FF / TSV / CSV / SPEC_LIB suffixes). DIA-NN's own
+# .predicted.speclib therefore needs NO conversion -- it ends in .speclib.
+RADIANT_LIB_SUFFIXES = (".fraglibff", ".tsv", ".csv", ".speclib")
 
-    Reuses the skill's own DIA-NN acquisition rather than adding a second predictor.
-    `--out-lib` with a .tsv extension makes DIA-NN emit the TSV library schema that
-    Radiant's FragLibTsvReader expects; we verify the header rather than trust it.
+
+def _find_diann_library(stem_dir, stem):
+    """Locate whatever DIA-NN actually wrote, in Radiant-preference order.
+
+    DIA-NN IGNORES the extension you give --out-lib for a PREDICTED library: it always
+    writes <stem>.predicted.speclib, its compact binary format (DIA-NN docs, "Output
+    library": "For predicted library generation, however, the output file takes the
+    .predicted.speclib extension"). Asking for .tsv and then checking for .tsv fails
+    even though the run succeeded -- so look for what it really produces.
     """
-    lib = os.path.join(out, "radiant_lib", "diann_predicted_lib.tsv")
-    if os.path.exists(lib) and os.path.getsize(lib) > 1000:
-        print(f"  [radiant] reusing existing DIA-NN library {lib}")
-        return lib
+    for cand in (f"{stem}.predicted.speclib", f"{stem}.speclib",
+                 f"{stem}.parquet", f"{stem}.tsv"):
+        p = os.path.join(stem_dir, cand)
+        if os.path.exists(p) and os.path.getsize(p) > 1000:
+            return p
+    return None
+
+
+def radiant_library(tools, fasta, out, threads, params=None):
+    """Build the spectral library Radiant searches against, from DIA-NN's predictor.
+
+    NOT a straight hand-off: DIA-NN 2.x writes .predicted.speclib v-10/-11 and Radiant's
+    reader only supports v>=-3, so its binary is rejected outright. The conversion lives
+    in make_radiant_library.py.
+    """
+    libdir = os.path.join(out, "radiant_lib")
+    ready = os.path.join(libdir, "radiant_library.tsv")
+    if os.path.exists(ready) and os.path.getsize(ready) > 1_000_000:
+        print(f"  [radiant] reusing existing library {ready}")
+        return ready
     dn = tools.get("diann")
     if not dn:
-        sys.exit("Radiant needs a DIA-NN predicted spectral library, but tools.json has "
-                 "no DIA-NN command. Acquire DIA-NN first (it is the library generator "
-                 "for this route), or pass --library with an existing DIA-NN .tsv library.")
-    os.makedirs(os.path.dirname(lib), exist_ok=True)
-    cfg = f"--cfg {shlex.quote(params)} " if params and os.path.exists(params) else ""
-    sh(f"{dn} {cfg}--fasta {shlex.quote(fasta)} --fasta-search --predictor --gen-spec-lib "
-       f"--out-lib {shlex.quote(lib)} --threads {threads}")
-    if not os.path.exists(lib) or os.path.getsize(lib) < 1000:
-        sys.exit(f"DIA-NN did not produce a usable library at {lib}.")
-    with open(lib, "r", errors="replace") as fh:
-        header = fh.readline()
-    needed = {"PrecursorMz", "ProductMz", "LibraryIntensity", "ModifiedPeptide"}
-    missing = needed - set(header.rstrip("\n").split("\t"))
-    if missing:
-        sys.exit(f"{lib} is not a DIA-NN TSV library — missing columns {sorted(missing)}.\n"
-                 f"  Radiant reads DIA-NN's library schema; check the --out-lib extension.")
-    print(f"  [radiant] DIA-NN predicted library -> {lib}")
-    return lib
+        sys.exit("Radiant needs a spectral library, but tools.json has no DIA-NN command. "
+                 "Acquire DIA-NN first (it is the library generator for this route), or "
+                 "pass --library with an existing .tsv/.csv/.fragLibFF library.")
+    os.makedirs(libdir, exist_ok=True)
+    # DIA-NN 2.x and Radiant share NO library format directly: DIA-NN writes
+    # .predicted.speclib v-10/-11, Radiant's reader supports v>=-3 ("ERROR: version is
+    # not supported11"), and DIA-NN cannot emit TSV. make_radiant_library.py does the
+    # required predict -> parquet -> renamed TSV hop. See its docstring for the evidence.
+    helper = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                          "make_radiant_library.py")
+    res = subprocess.run([sys.executable, helper, "--diann", dn, "--fasta", fasta,
+                          "--out-dir", libdir, "--threads", str(threads)],
+                         capture_output=True, text=True)
+    sys.stderr.write(res.stderr)
+    if res.returncode != 0:
+        sys.exit(f"make_radiant_library.py failed (exit {res.returncode}).")
+    info = json.loads(res.stdout[res.stdout.index("{"):])
+    print(f"  [radiant] library -> {info['library']} ({info.get('rows', '?')} rows)")
+    return info["library"]
 
 
 def run_radiant_parallel(tools, params, files, fasta, out, threads, a, library=None):
@@ -354,6 +379,16 @@ def run_radiant(tools, params, files, fasta, out, threads, sbatch, library=None,
                  f"  Bruker inputs: {bad}\n"
                  "  Use the DIA-NN or FragPipe/diaTracer route for timsTOF data.")
     mzml = ensure_mzml(files, out)          # .raw -> mzML (msconvert), same path Sage uses
+    if library and not library.lower().endswith(RADIANT_LIB_SUFFIXES):
+        sys.exit(f"Radiant cannot read {os.path.basename(library)} — its loader accepts "
+                 f"only {', '.join(RADIANT_LIB_SUFFIXES)}.")
+    if library and library.lower().endswith(".speclib"):
+        sys.stderr.write(
+            "[run_search] WARNING: Radiant only reads .speclib format v>=-3, and every\n"
+            "  DIA-NN 2.x library is v-10/-11 — it will abort with 'version is not\n"
+            "  supported'. If this is a DIA-NN library, convert it first:\n"
+            "    python3 scripts/make_radiant_library.py --from-speclib <lib> "
+            "--diann '<cmd>' --out-dir <dir>\n")
     lib = library or radiant_library(tools, fasta, out, threads, params)
 
     results = os.path.join(out, "radiant_results")
@@ -390,6 +425,27 @@ def run_radiant(tools, params, files, fasta, out, threads, sbatch, library=None,
     sh(full)
     report = adapt_radiant(out)
     return {"engine": "radiant", "report": report, "ran": True, "library": lib}
+
+
+def _radiant_run_name(raw):
+    """Fulcrum reports Run as a full URI of the per-file result, e.g.
+    `file:///mnt/results/radiant-results/Sample_1.mzML.radiantDIA`.
+
+    A single splitext leaves `Sample_1.mzML`, which does NOT match the bare run names
+    every other engine emits — so a conditions.csv keyed on sample names would silently
+    fail to assign groups. Strip the URI, the container path, and BOTH extensions.
+    """
+    s = str(raw)
+    if "://" in s:
+        s = s.split("://", 1)[1]
+    s = os.path.basename(s.rstrip("/"))
+    for _ in range(3):                       # .mzML.radiantDIA, .d.radiantDIA, ...
+        stem, ext = os.path.splitext(s)
+        if ext.lower() in (".radiantdia", ".mzml", ".raw", ".d", ".gz", ".parquet"):
+            s = stem
+        else:
+            break
+    return s
 
 
 def adapt_radiant(out):
@@ -441,7 +497,7 @@ def adapt_radiant(out):
         sys.exit(f"Radiant output missing expected columns; saw {t.column_names}")
     c_q = col("Global.PG.Q.Value", "Q.Value")
 
-    runs = [os.path.splitext(os.path.basename(str(r)))[0] for r in t.column(c_run).to_pylist()]
+    runs = [_radiant_run_name(r) for r in t.column(c_run).to_pylist()]
     pgs = [str(p) for p in t.column(c_pg).to_pylist()]
     vals = t.column(c_int).to_pylist()
     qs = t.column(c_q).to_pylist() if c_q else [0.0] * len(pgs)
@@ -861,6 +917,19 @@ def main():
     bundle = json.load(open(a.bundle))
     engine = pick_engine(a, bundle)
     files = expand_files(a.files)
+
+    # Absolutize EVERY path before it is baked into a command. emit_sbatch() writes
+    # `cd <abspath(out)>` and then the command verbatim, so a caller-relative
+    # --params/--fasta/--out (exactly what SKILL.md documents: `--params ./wf/x.cfg`)
+    # resolves against the WRONG directory once the job runs — the search dies on a
+    # missing params file, or worse silently looks at ./out/out/. Same hazard for the
+    # container routes, whose bind mounts are derived from these paths.
+    a.out = os.path.abspath(a.out)
+    for attr in ("params", "fasta", "library"):
+        v = getattr(a, attr, None)
+        if v:
+            setattr(a, attr, os.path.abspath(v))
+    files = [os.path.abspath(f) for f in files]
 
     if a.adapt_only:
         report = {"sage": adapt_sage, "fragpipe": adapt_fragpipe,
