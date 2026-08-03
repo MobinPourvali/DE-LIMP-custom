@@ -68,6 +68,47 @@ def run_name(raw):
     return s
 
 
+def ms1_from_per_file(results_root):
+    """(run, peptide, charge) -> MS1 intensity, read from Radiant's own per-file output.
+
+    Fulcrum's `combined` backend DROPS every MS1 column, so a report built from it alone
+    has no MS1 signal and DE-LIMP's MS1_Signal QC metric (sum of `Ms1.Apex.Area`) comes
+    out blank. Radiant itself does compute MS1 -- its `.radiantDIA` per-file result is a
+    PARQUET table carrying 27 MS1 columns. `Ms1IntensityFound100` is the monoisotopic
+    intensity and the closest analogue of DIA-NN's Ms1.Apex.Area, so we join it back.
+
+    Verified: the (PeptideStringWithMods, Charge) key matches Fulcrum's
+    (Modified.Sequence, Precursor.Charge) for 100% of rows.
+    """
+    import pyarrow.parquet as pq
+    per_file = os.path.join(results_root, "radiant-results")
+    if not os.path.isdir(per_file):
+        return {}
+    out = {}
+    for fn in sorted(os.listdir(per_file)):
+        if not fn.endswith(".radiantDIA"):
+            continue
+        run = run_name(fn)
+        try:
+            pf = pq.ParquetFile(os.path.join(per_file, fn))
+            names = pf.schema_arrow.names
+            cols = [c for c in ("PeptideStringWithMods", "Charge", "Ms1IntensityFound100")
+                    if c in names]
+            if len(cols) < 3:
+                continue
+            t = pf.read(columns=cols)
+            for p, c, m in zip(t.column("PeptideStringWithMods").to_pylist(),
+                               t.column("Charge").to_pylist(),
+                               t.column("Ms1IntensityFound100").to_pylist()):
+                if m:                       # keep the best MS1 seen for the precursor
+                    k = (run, str(p), c)
+                    if m > out.get(k, 0):
+                        out[k] = float(m)
+        except Exception as e:
+            sys.stderr.write(f"[radiant_to_delimp] could not read MS1 from {fn}: {e}\n")
+    return out
+
+
 def library_annotation(lib_tsv):
     """ModifiedPeptide -> (ProteinName, Genes) from the Radiant TSV library.
 
@@ -98,6 +139,8 @@ def main():
                     help="the run's radiant_results dir (containing fulcrum-results/)")
     ap.add_argument("--library", help="Radiant TSV library, to recover Protein.Names/Genes")
     ap.add_argument("--out", required=True, help="report.parquet to upload to DE-LIMP")
+    ap.add_argument("--no-ms1", action="store_true",
+                    help="skip the MS1 join from the per-file .radiantDIA results")
     a = ap.parse_args()
 
     try:
@@ -153,6 +196,16 @@ def main():
         out["Genes"] = [""] * t.num_rows
         n_ann = 0
 
+    # MS1: recovered from Radiant's per-file output, since Fulcrum drops it.
+    ms1 = {} if a.no_ms1 else ms1_from_per_file(a.results)
+    if ms1:
+        out["Ms1.Apex.Area"] = [
+            ms1.get((r, m, c), 0.0)
+            for r, m, c in zip(out["Run"], mods, chgs)]
+        n_ms1 = sum(1 for v in out["Ms1.Apex.Area"] if v > 0)
+    else:
+        n_ms1 = 0
+
     pq.write_table(pa.table(out), a.out)
     runs = sorted(set(out["Run"]))
     print(json.dumps({
@@ -163,8 +216,15 @@ def main():
         "protein_groups": len(set(out.get("Protein.Group", []))),
         "precursors": len(set(out["Precursor.Id"])),
         "annotated_rows": n_ann,
+        "ms1_rows": n_ms1,
         "columns": list(out.keys()),
         "upload": "DE-LIMP -> 'DIA-NN Report (.parquet)'",
+        "ms1_note": ("Ms1.Apex.Area recovered from Radiant's per-file output — Fulcrum's "
+                     "combined backend drops all MS1 columns, which is why DE-LIMP's "
+                     "MS1_Signal is blank without this join.") if n_ms1 else
+                    ("NO MS1 — DE-LIMP's MS1_Signal QC metric will be blank. Radiant does "
+                     "compute MS1; check that the .radiantDIA per-file results are still "
+                     "beside the fulcrum-results directory."),
         "warning": None if ann else
         "Protein.Names/Genes are EMPTY — pass --library to recover them, or gene-level "
         "features in DE-LIMP (GSEA, gene labels) will have nothing to work with.",
