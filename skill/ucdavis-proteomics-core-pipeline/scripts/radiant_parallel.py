@@ -50,7 +50,7 @@ def container_prefix(runtime, image, pairs):
     return f"apptainer exec {_mounts_for(runtime, pairs)} {shlex.quote(image)}"
 
 
-def detect_queue(partition, account, qos):
+def detect_queue(partition, account, qos, peak_cpus=None, preemptible_ok=False):
     """Resolve the queue from the submitting user's own SLURM associations.
 
     ONE definition: reuse run_search.slurm_queue() rather than re-deriving it. Emitting
@@ -61,7 +61,8 @@ def detect_queue(partition, account, qos):
     try:
         sys.path.insert(0, HERE)
         from run_search import slurm_queue
-        return slurm_queue(partition, account, qos)
+        return slurm_queue(partition, account, qos, peak_cpus=peak_cpus,
+                           preemptible_ok=preemptible_ok)
     except Exception as e:
         sys.stderr.write(f"[radiant_parallel] queue detection unavailable ({e}); "
                          "emitting the caller's values verbatim\n")
@@ -162,8 +163,19 @@ def main():
         return f"{cmap[os.path.dirname(h)]}/{os.path.basename(h)}"
 
     prefix = container_prefix(a.runtime, a.image, pairs)
-    part, acct, qos = detect_queue(a.partition, a.account, a.qos)
+    # QUEUE CHOICE, per DE-LIMP's rule (docs/QUEUE_SWITCHING.md):
+    #   step 2 is an ARRAY -- embarrassingly parallel and idempotent, so preemption
+    #     costs one task's work. It is also the step the per-user CPU cap on the
+    #     priority queue throttles, so send it to publicgrp/low when low has capacity.
+    #   steps 1 and 3 are single jobs that CANNOT restart mid-way (a preempted Fulcrum
+    #     rescoring loses the whole pass), so they stay on the priority queue.
+    part_a, acct_a, qos_a = detect_queue(a.partition, a.account, a.qos,
+                                         peak_cpus=a.threads_per_file,
+                                         preemptible_ok=True)      # array
+    part, acct, qos = detect_queue(a.partition, a.account, a.qos,
+                                   peak_cpus=a.fulcrum_cpus)       # single jobs
     q = dict(partition=part, account=acct, qos=qos)
+    q_array = dict(partition=part_a, account=acct_a, qos=qos_a)
 
     def write(name, text):
         p = os.path.join(D, name)
@@ -212,7 +224,7 @@ def main():
     # (sed runs outside the container), so mount it nowhere -- it is a host file.
     scripts["step2_search"] = write("step2_search.sbatch", "\n".join([
         header("r2_search", a.threads_per_file, a.mem_per_file, a.time_per_file,
-               array=array, **q), "",
+               array=array, **q_array), "",
         f'echo "Step 2/3 Radiant search, task ${{SLURM_ARRAY_TASK_ID}} of {n}"; date',
         pick,
         f'{prefix} RadiantDIA {cp(lib)} {cp(a.fasta)} {cp(a.config)} "$FILE" '
@@ -235,6 +247,16 @@ def main():
         '',
         '[overrides.search]',
         'reuse_existing = true',
+        '',
+        '# Spark sizes its driver heap INDEPENDENTLY of the SLURM allocation, so giving',
+        '# the job more --mem does nothing: Fulcrum dies with',
+        '#   java.lang.OutOfMemoryError: Java heap space   /  "Answer from Java side is empty"',
+        '# during cortado\'s blocking mix-max step (spark_blocks.toPandas() collects to the',
+        '# driver). fulcrum() forwards this table to SparkSession.builder.config().',
+        '[spark_config]',
+        f'"spark.driver.memory" = "{max(int(a.fulcrum_mem * 0.75), 8)}g"',
+        f'"spark.driver.maxResultSize" = "{max(int(a.fulcrum_mem * 0.35), 4)}g"',
+        '"spark.sql.shuffle.partitions" = "64"',
     ])
     toml_path = os.path.join(results, "fulcrum_rescore.toml")
     with open(toml_path, "w") as fh:
@@ -257,7 +279,8 @@ def main():
         "per_file_results": rdir,
         "toml": toml_path,
         "library": lib,
-        "queue": {"partition": part, "account": acct, "qos": qos},
+        "queue": {"single_jobs": {"partition": part, "account": acct, "qos": qos},
+                  "array_step2": {"partition": part_a, "account": acct_a, "qos": qos_a}},
         "submit": ("Submit with dependencies, e.g.:\n"
                    + ("  j1=$(sbatch --parsable step1_libpred.sbatch)\n"
                       "  j2=$(sbatch --parsable --dependency=afterok:$j1 step2_search.sbatch)\n"

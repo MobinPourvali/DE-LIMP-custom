@@ -82,6 +82,10 @@ def dotnet_env_for(files):
             f'export PATH={shlex.quote(root)}:"$PATH";')
 
 
+# Per-user CPU cap on HIVE's genome-center-grp/high (docs/QUEUE_SWITCHING.md).
+HIVE_USER_CPU_CAP = int(os.environ.get('HIVE_USER_CPU_CAP', '64'))
+
+
 def slurm_available():
     return shutil.which("sbatch") is not None
 
@@ -147,6 +151,9 @@ def run_diann_parallel(cmd, params, files, fasta, out, threads, a):
     return info
 
 
+a_globals = None   # set in main(); carries --one-step
+
+
 def run_diann(cmd, params, files, fasta, out, threads, sbatch, acquisition=""):
     os.makedirs(out, exist_ok=True)
     report = os.path.join(out, "report.parquet")
@@ -155,10 +162,58 @@ def run_diann(cmd, params, files, fasta, out, threads, sbatch, acquisition=""):
     # auto-disabled on DDA; for DDA quant DIA-NN recommends extra MS1 filtering on
     # Ms1.Global.Q.Value / Ms1.Global.Quality (see references/search-engines.md).
     dda = " --dda" if (acquisition or "").upper() == "DDA" else ""
-    full = (f"{cmd} --cfg {shlex.quote(params)} {f_args} "
-            f"--fasta {shlex.quote(fasta)} --out {shlex.quote(report)} "
-            f"--threads {threads}{dda}")
+
+    # Library-free runs are split into TWO SLURM JOBS: predict the library, then search
+    # against it as an afterok dependency. Not because DIA-NN's one-step warning is
+    # fatal -- its author says that warning is benign -- but because it is the right
+    # shape regardless: the prediction is a single-threaded-ish CPU job with different
+    # resource needs from the search, it is expensive to redo, and a separate job means
+    # a failed search can be requeued against the SAME library instead of rebuilding it.
+    # The 5-step parallel chain already worked this way; this makes the single-shot path
+    # match. `--one-step` collapses them back if you ever want the old behaviour.
+    cfg_txt = ""
+    try:
+        cfg_txt = open(params).read()
+    except OSError:
+        pass
+    libfree = all(f in cfg_txt for f in ("--fasta-search", "--gen-spec-lib")) \
+        and not getattr(a_globals, "one_step", False)
     dnet = dotnet_env_for(files)          # .NET 8 for reading Thermo .raw, if needed
+
+    lib = os.path.join(out, "diann_lib")
+    strip = ("--fasta-search", "--gen-spec-lib", "--predictor", "--reanalyse",
+             "--matrices", "--rt-profiling")
+    search_cfg = " ".join(t for t in cfg_txt.split() if t not in strip)
+    lib_cmd = (f"{cmd} --cfg {shlex.quote(params)} --fasta {shlex.quote(fasta)} "
+               f"--out-lib {shlex.quote(lib)} --threads {threads}")
+    search_cmd = (f"{cmd} {search_cfg} {f_args} --fasta {shlex.quote(fasta)} "
+                  f"--lib {shlex.quote(lib)}.predicted.speclib --reanalyse --matrices "
+                  f"--out {shlex.quote(report)} --threads {threads}{dda}")
+    onecmd = (f"{cmd} --cfg {shlex.quote(params)} {f_args} "
+              f"--fasta {shlex.quote(fasta)} --out {shlex.quote(report)} "
+              f"--threads {threads}{dda}")
+
+    # TWO JOBS + dependency when emitting sbatch: the library is expensive and
+    # reusable, so a failed search requeues against it instead of rebuilding.
+    if libfree and sbatch:
+        lib_sh = sbatch.replace(".sh", "") + "_1_lib.sh"
+        srch_sh = sbatch.replace(".sh", "") + "_2_search.sh"
+        emit_sbatch(lib_sh, lib_cmd, out, threads, job="diann_libpred", preamble=dnet)
+        emit_sbatch(srch_sh, search_cmd, out, threads, job="diann_search", preamble=dnet)
+        submit = os.path.join(out, "submit.sh")
+        with open(submit, "w") as fh:
+            fh.write("#!/bin/bash -l\nset -euo pipefail\n"
+                     f"j1=$(sbatch --parsable {shlex.quote(lib_sh)})\n"
+                     f"j2=$(sbatch --parsable --dependency=afterok:$j1 {shlex.quote(srch_sh)})\n"
+                     'echo "submitted: libpred=$j1 search=$j2"\n'
+                     f'echo "report will be {report}"\n')
+        os.chmod(submit, 0o755)
+        print(f"  [sbatch] two-job chain: {lib_sh} -> {srch_sh}; submit with: bash {submit}")
+        return {"engine": "diann", "report": report, "submitted": submit,
+                "mode": "two_job_libfree", "library": lib + ".predicted.speclib",
+                "ran": False, "dda": bool(dda), "raw_dotnet": bool(dnet)}
+
+    full = (lib_cmd + " && " + search_cmd) if libfree else onecmd
     if sbatch:
         emit_sbatch(sbatch, full, out, threads, job="diann_search", preamble=dnet)
         return {"engine": "diann", "report": report, "submitted": sbatch,
@@ -791,7 +846,41 @@ def _find(root, names):
     return None
 
 
-def slurm_queue(partition=None, account=None, qos=None):
+
+def _partition_idle_cpus(part):
+    """Idle CPUs in a partition. `sinfo -h -o %C` gives Alloc/Idle/Other/Total."""
+    try:
+        out = subprocess.run(["sinfo", "-p", part, "-h", "-o", "%C"],
+                             capture_output=True, text=True, timeout=20).stdout.strip()
+        return int(out.split("/")[1]) if "/" in out else 0
+    except Exception:
+        return 0
+
+
+def _lab_cpus_available():
+    """CPUs left under MY per-user cap on the priority queue, or None if unknown.
+
+    The per-user limit is the binding constraint on genome-center-grp/high (not the
+    much larger account limit, which is shared), so this counts what I am already
+    running there rather than what the group is."""
+    user = os.environ.get("USER", "")
+    try:
+        used = 0
+        out = subprocess.run(["squeue", "-h", "-u", user, "-t", "RUNNING",
+                              "-p", "high", "-o", "%C"],
+                             capture_output=True, text=True, timeout=20).stdout
+        for ln in out.split():
+            try:
+                used += int(ln)
+            except ValueError:
+                pass
+        return max(HIVE_USER_CPU_CAP - used, 0)
+    except Exception:
+        return None
+
+
+def slurm_queue(partition=None, account=None, qos=None,
+                peak_cpus=None, preemptible_ok=False):
     """Pick a SLURM partition/account/qos the CURRENT USER can actually submit to.
 
     Never hardcode a queue. The old behaviour emitted
@@ -840,6 +929,30 @@ def slurm_queue(partition=None, account=None, qos=None):
             if a == acct and p == part:
                 return a, p, (q or None)
         return None
+
+    lab, pub = find("genome-center-grp", "high"), find("publicgrp", "low")
+
+    # Port of DE-LIMP's select_best_partition() (R/helpers_search.R). Entitlement is
+    # not the question -- UTILISATION is. The priority queue has a PER-USER CPU cap
+    # (64 on HIVE), and once you are at it your own jobs queue behind each other:
+    # an 18-task array on `high` starves everything else you submit (QOSGrpCpuLimit,
+    # observed). publicgrp/low is preemptible but has thousands of idle CPUs, so for
+    # work that is safe to preempt it starts sooner and finishes sooner.
+    if lab and pub and not partition:
+        need = min(peak_cpus or 16, 16)          # at least one array task's worth
+        avail = _lab_cpus_available()
+        idle = _partition_idle_cpus("low")
+        if avail is not None and avail < need and idle >= need:
+            a, p, q = pub
+            print(f"[slurm_queue] priority queue at capacity ({avail} CPUs free, need "
+                  f"{need}); publicgrp/low has {idle} idle -> using low (preemptible, "
+                  f"--requeue is added)", file=sys.stderr)
+            return p, a, q
+        if preemptible_ok and idle >= need and (avail is None or avail < need * 2):
+            a, p, q = pub
+            print(f"[slurm_queue] preemption-safe step and low has {idle} idle CPUs "
+                  f"-> using publicgrp/low for throughput", file=sys.stderr)
+            return p, a, q
 
     for acct, part in (("genome-center-grp", "high"), ("publicgrp", "low")):
         hit = find(acct, part)
@@ -897,6 +1010,12 @@ def main():
     ap.add_argument("--engine", choices=["diann", "alphadia", "sage", "fragpipe", "radiant"])
     ap.add_argument("--library", help="Radiant: an existing DIA-NN .tsv spectral library. "
                                       "Omit and one is generated with DIA-NN's predictor.")
+    ap.add_argument("--one-step", action="store_true",
+                    help="DIA-NN library-free in ONE command instead of a "
+                         "library job + dependent search job")
+    ap.add_argument("--allow-inline", action="store_true",
+                    help="permit an inline search on a host where sbatch exists "
+                         "(only inside an salloc/srun allocation)")
     ap.add_argument("--mbr", action="store_true",
                     help="Radiant: run match-between-runs (two-pass) instead of single-pass")
     ap.add_argument("--sbatch", help="emit an sbatch script at this path instead of running inline")
@@ -913,6 +1032,8 @@ def main():
                     help="skip the search; just build report.parquet from an existing engine output dir")
     a = ap.parse_args()
 
+    global a_globals
+    a_globals = a
     tools = json.load(open(a.tools))
     bundle = json.load(open(a.bundle))
     engine = pick_engine(a, bundle)
@@ -947,6 +1068,24 @@ def main():
     use_parallel, why = parallel_decision(engine, files, a.params, a)
     if engine == "diann":
         print(f"[run_search] parallel routing: {'YES' if use_parallel else 'no'} -- {why}")
+
+    # HARD STOP: never start a multi-hour search inline on a cluster LOGIN NODE.
+    # Golden rule #3 says every heavy step goes through the scheduler, but nothing
+    # enforced it -- and the failure is silent and expensive. It bit for real: a
+    # DIA-NN run whose mass accuracy was unpinned fell out of the parallel chain into
+    # the single-shot path and, with no --sbatch, launched diann-linux on the HIVE
+    # login node at 16 threads (twice, because an earlier invocation was still alive).
+    # sbatch present + no SLURM_JOB_ID == we are on a submit host, not a compute node.
+    if not use_parallel and not a.sbatch and slurm_available() \
+            and not os.environ.get("SLURM_JOB_ID") and not a.allow_inline:
+        sys.exit(
+            "REFUSING to run the search inline: this looks like a cluster login/submit "
+            "node (sbatch is on PATH and SLURM_JOB_ID is unset).\n"
+            f"  engine={engine}  files={len(files)}  threads={a.threads}\n"
+            f"  parallel routing declined because: {why}\n"
+            "  Re-run with --sbatch <script> and submit it, e.g.:\n"
+            f"    ... --sbatch ./{engine}_job.sh && sbatch ./{engine}_job.sh\n"
+            "  (--allow-inline overrides this, e.g. inside an salloc/srun session.)")
 
     print(f"[run_search] engine={engine}  files={len(files)}  threads={a.threads}  "
           f"{'(5-step chain)' if use_parallel else '(emit sbatch)' if a.sbatch else '(inline)'}")
