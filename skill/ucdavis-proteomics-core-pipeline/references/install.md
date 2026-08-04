@@ -4,6 +4,18 @@ Design goal: **a biologist with a fresh laptop runs the skill and it works.**
 `setup.sh` does the installing; this doc explains what it does and the one
 genuine manual fallback.
 
+## Installing the SKILL itself — marketplace only
+
+Install via the plugin marketplace. **Do not hand-copy this directory into
+`~/.claude/skills/<name>/` while the plugin is installed** — the plugin already owns
+the name, so the copy is silently inert. `claude plugin list` reports it as
+`@skills-dir: Not loaded — the name is already taken`: it looks installed and does
+nothing, and it will drift from the released version without any error to tell you.
+
+If you already have a hand-copied directory, remove it and reinstall from the
+marketplace; check with `claude plugin list` that exactly one copy is loaded, and
+that its version matches the one you expect.
+
 ## What `setup.sh` installs automatically (no admin / no sudo)
 
 It downloads **micromamba** (a single static binary, ~5 MB) into

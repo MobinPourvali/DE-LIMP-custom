@@ -40,6 +40,8 @@ any auto-fix you applied to the user.
 | `out_of_memory` | oom-kill, `std::bad_alloc`, OUT_OF_MEMORY | raise sbatch `--mem` (e.g. 64G→128G); DIA-NN: fewer threads; resubmit |
 | `timeout` | TIMEOUT / "DUE TO TIME LIMIT" | raise `--time`, or split the run; resubmit |
 | `diann_no_dotnet` | `dotnet: not found` | wrong DIA-NN container (no .NET → `.raw` silently skipped). Use the HIVE **native** build `build_<v>/diann-<v>/diann-linux` or a .NET image |
+| `diann_zero_ids` | `Number of IDs at 0.01 FDR: 0` | Completed but identified nothing — a **silent null result**, not a crash. **Preserve `report.log.txt` before re-running**; it is the only evidence. Check: library generated precursors → mzML really are DIA with isolation windows (`detect_acquisition.py`) → FASTA matches organism → mass accuracy. DIA-NN's warning about generating the predicted library in a separate step is **benign** (per its author) — don't chase it. |
+| `spark_heap` | `java.lang.OutOfMemoryError: Java heap space` / `Answer from Java side is empty` | JVM heap OOM in Fulcrum/Spark. **Raising `--mem` does not help** — Spark sizes its driver heap independently of the SLURM allocation. Set `spark.driver.memory` via the workflow TOML's `spark_config`. |
 | `empty_results` | 0 proteins / no fragment ions | FASTA/organism mismatch, mass-accuracy, or wrong acquisition type — check inputs |
 | `gpu` | CUDA / no kernel image | AlphaDIA needs a GPU: submit to a GPU node (`--gres=gpu:1`) or reduce batch size |
 | `sage_no_mzml` | msconvert not found / needs mzML | convert `.d`/`.raw` → mzML first (Linux/HIVE), then re-run Sage |

@@ -114,6 +114,9 @@ def header(name, cpus, mem_gb, hours, partition, account, qos=None, array=None):
          f"#SBATCH --account={account}"]
     if qos:
         h.append(f"#SBATCH --qos={qos}")
+    # publicgrp/low is PREEMPTIBLE: without --requeue a preempted task is simply lost.
+    if (qos or "").startswith("public") or partition == "low":
+        h.append("#SBATCH --requeue")
     h += [f"#SBATCH -o {name}_%j.log", f"#SBATCH -e {name}_%j.log"]
     if array:
         h.insert(2, f"#SBATCH --array={array}")
@@ -212,6 +215,25 @@ def main():
     predicted = seed if seed else f"{D}/step1.predicted.speclib"
     empirical = f"{D}/empirical.parquet"
 
+    # QUEUE CHOICE, ported from DE-LIMP's select_best_partition()
+    # (R/helpers_search.R) + docs/QUEUE_SWITCHING.md:
+    #   steps 2 & 4 are ARRAYS -- embarrassingly parallel, one file per task, so a
+    #     preemption costs one task. They are also exactly what the per-user CPU cap on
+    #     the priority queue throttles, so prefer publicgrp/low when it has idle CPUs
+    #     (it routinely has thousands).
+    #   steps 1, 3 & 5 are SINGLE jobs that cannot restart mid-way (3 consumes every
+    #     .quant file, 5 needs all of step 4), so a preemption throws the stage away --
+    #     keep them on the priority queue.
+    try:
+        sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+        from run_search import slurm_queue as _sq
+        _pa, _aa, _qa = _sq(a.partition, a.account, a.qos,
+                            peak_cpus=a.threads_per_file, preemptible_ok=True)
+        _ps, _as_, _qs = _sq(a.partition, a.account, a.qos, peak_cpus=a.assembly_cpus)
+    except Exception:
+        _pa, _aa, _qa = a.partition, a.account, a.qos
+        _ps, _as_, _qs = a.partition, a.account, a.qos
+
     def write(name, body):
         p = os.path.join(out, name)
         open(p, "w").write(body + "\n"); os.chmod(p, 0o755); return name
@@ -225,7 +247,7 @@ def main():
     s1 = None
     if not seed:
         s1 = write("step1_libpred.sbatch", "\n".join([
-            header("s1_libpred", a.libpred_cpus, a.libpred_mem, a.libpred_time, a.partition, a.account, qos=a.qos), "",
+            header("s1_libpred", a.libpred_cpus, a.libpred_mem, a.libpred_time, _ps, _as_, qos=_qs), "",
             f'echo "Step 1/5 library prediction"; date',
             f'{DN} --fasta {fasta} --fasta-search --predictor --gen-spec-lib \\',
             f'  --out-lib {D}/step1.speclib --out {D}/step1_lib.parquet \\',
@@ -233,7 +255,7 @@ def main():
 
     # Step 2 — first pass (array): predicted lib -> per-file .quant
     s2 = write("step2_firstpass.sbatch", "\n".join([
-        header("s2_firstpass", a.threads_per_file, a.mem_per_file, a.time_per_file, a.partition, a.account, qos=a.qos, array=array), "",
+        header("s2_firstpass", a.threads_per_file, a.mem_per_file, a.time_per_file, _pa, _aa, qos=_qa, array=array), "",
         f'echo "Step 2/5 first pass, task ${{SLURM_ARRAY_TASK_ID}} of {n}"; date', pick,
         f'{DN} --f "$FILE" --fasta {fasta} --lib {predicted} \\',
         f'  --temp {D}/quant_step2 --rt-profiling --gen-spec-lib --quant-ori-names \\',
@@ -241,7 +263,7 @@ def main():
 
     # Step 3 — empirical library assembly (single job, --use-quant)
     s3 = write("step3_assembly.sbatch", "\n".join([
-        header("s3_assembly", a.assembly_cpus, a.assembly_mem, a.assembly_time, a.partition, a.account, qos=a.qos), "",
+        header("s3_assembly", a.assembly_cpus, a.assembly_mem, a.assembly_time, _ps, _as_, qos=_qs), "",
         f'echo "Step 3/5 empirical library assembly"; date',
         f'cp -r {D}/quant_step2 {D}/quant_step2_orig 2>/dev/null || true   # backup for resume',
         f'{DN} {all_f} --fasta {fasta} --lib {predicted} --use-quant --quant-ori-names \\',
@@ -251,7 +273,7 @@ def main():
 
     # Step 4 — final pass (array): empirical lib -> per-file .quant
     s4 = write("step4_finalpass.sbatch", "\n".join([
-        header("s4_finalpass", a.threads_per_file, a.mem_per_file, a.time_per_file, a.partition, a.account, qos=a.qos, array=array), "",
+        header("s4_finalpass", a.threads_per_file, a.mem_per_file, a.time_per_file, _pa, _aa, qos=_qa, array=array), "",
         f'echo "Step 4/5 final pass, task ${{SLURM_ARRAY_TASK_ID}} of {n}"; date', pick,
         'QUANT="${FILE##*/}"; QUANT="${QUANT%.*}.quant"',
         f'if [ ! -f "{D}/quant_step2/$QUANT" ]; then echo "SKIP: no step-2 quant for $QUANT"; exit 0; fi',
@@ -261,7 +283,7 @@ def main():
 
     # Step 5 — cross-run report (single job, --use-quant --matrices)
     s5 = write("step5_report.sbatch", "\n".join([
-        header("s5_report", a.assembly_cpus, a.assembly_mem, a.assembly_time, a.partition, a.account, qos=a.qos), "",
+        header("s5_report", a.assembly_cpus, a.assembly_mem, a.assembly_time, _ps, _as_, qos=_qs), "",
         f'echo "Step 5/5 cross-run report"; date',
         f'{DN} {all_f} --fasta {fasta} --lib {empirical} --use-quant --quant-ori-names \\',
         f'  --temp {D}/quant_step4 --matrices --out {D}/{report} \\',

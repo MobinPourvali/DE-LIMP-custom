@@ -36,9 +36,59 @@ ORBITRAP_RES_PPM = {240000: 4, 120000: 7, 60000: 10, 30000: 15}
 SRC_DIANN = "DIA-NN README recommended settings (verified 2026-06)"
 
 
-def classify_instrument(name):
-    """Return (class, ms1_ppm, ms2_ppm, label, source). None ppm => auto-calibrate."""
+# DIA-NN's own Orbitrap resolution -> mass-accuracy table, verbatim from its README
+# ("Changing default settings" §4). Resolution is the thing that actually sets the
+# achievable tolerance, which is why a model name alone is not enough.
+DIANN_ORBITRAP_PPM = {240000: 4, 120000: 7, 60000: 10, 30000: 15}
+SRC_TABLE = "DIA-NN README, Orbitrap resolution->accuracy table"
+
+
+def ppm_for_resolution(res):
+    """Map an Orbitrap resolving power to mass accuracy (ppm), per DIA-NN's table.
+
+    Exact tiers use the documented value. Anything between/outside is interpolated on
+    a log-log fit of the table and TAGGED as extrapolated -- DIA-NN documents 30k-240k
+    only, and real acquisitions sit outside it (an Exploris 480 DIA method commonly
+    runs MS2 at 15k). Silently emitting a number as if it were documented is exactly
+    the fabricated-default failure mode; the caller renders the tag.
+    """
+    if not res or res <= 0:
+        return None, None
+    res = float(res)
+    if int(res) in DIANN_ORBITRAP_PPM:
+        return DIANN_ORBITRAP_PPM[int(res)], SRC_TABLE
+    import math
+    pts = sorted(DIANN_ORBITRAP_PPM.items())
+    # log(ppm) is close to linear in log(resolution) across the documented tiers
+    (r1, p1), (r2, p2) = pts[0], pts[-1]
+    slope = (math.log(p2) - math.log(p1)) / (math.log(r2) - math.log(r1))
+    ppm = math.exp(math.log(p1) + slope * (math.log(res) - math.log(r1)))
+    ppm = round(ppm, 1)
+    inside = pts[0][0] <= res <= pts[-1][0]
+    tag = (f"{SRC_TABLE}, interpolated for {int(res):,} resolution" if inside else
+           f"{SRC_TABLE}, EXTRAPOLATED — {int(res):,} is outside the documented "
+           f"30k-240k range; verify against a real run")
+    return ppm, tag
+
+
+def classify_instrument(name, ms1_res=None, ms2_res=None):
+    """Return (class, ms1_ppm, ms2_ppm, label, source). None ppm => auto-calibrate.
+
+    DIA-NN asks for these to be FIXED rather than auto-optimised, and not only for
+    speed: "This optimisation is inherently noisy: even replicate injections may not
+    produce identical results, and therefore the analysis results will depend on which
+    run is first in the list." Auto therefore makes a result depend on FILE ORDER,
+    which also blocks the 5-step parallel chain (steps 3/5 reuse .quant files).
+    """
     n = (name or "").strip().lower()
+    # Measured resolution beats any model-name guess.
+    if ms1_res or ms2_res:
+        p1, s1 = ppm_for_resolution(ms1_res)
+        p2, s2 = ppm_for_resolution(ms2_res)
+        if p1 and p2:
+            return ("orbitrap_measured", p1, p2,
+                    f"Orbitrap, MS1 {int(ms1_res):,} / MS2 {int(ms2_res):,} resolution "
+                    f"read from the data", s2 if "EXTRAPOL" in (s2 or "") else s1)
     if not n:
         return ("unknown", None, None, "instrument not detected", "auto-calibration fallback")
     if "astral" in n:
@@ -47,13 +97,39 @@ def classify_instrument(name):
         return ("timstof", 15, 15, "Bruker timsTOF (dia-PASEF / ddaPASEF)", SRC_DIANN)
     if "tripletof" in n or "zenotof" in n or "sciex" in n:
         return ("sciex_tof", 20, 20, "SCIEX TripleTOF / ZenoTOF", SRC_DIANN)
-    # Orbitrap family without a resolution we can read -> DIA-NN auto-calibration
+    # Orbitrap family with no resolution to work from -> DIA-NN auto-calibration.
+    # Prefer passing --ms1-resolution/--ms2-resolution (read_mzml_resolution() gets
+    # them straight out of the mzML) so the run is reproducible and parallel-capable.
     if any(k in n for k in ("orbitrap", "exploris", "exactive", "fusion", "lumos",
                             "eclipse", "velos", "hf-x", "hf", "qe", "astral")):
         return ("orbitrap_generic", None, None,
-                "Orbitrap (resolution unknown — using DIA-NN automatic calibration)",
+                "Orbitrap (resolution unknown — using DIA-NN automatic calibration; "
+                "pass --ms1-resolution/--ms2-resolution to pin it)",
                 "DIA-NN default (--mass-acc 0 auto-optimises per run)")
     return ("unknown", None, None, f"unrecognized instrument '{name}'", "auto-calibration fallback")
+
+
+def read_mzml_resolution(path, max_bytes=4_000_000):
+    """(ms1_res, ms2_res) from an mzML's `mass resolving power` (MS:1000800) terms.
+
+    msconvert preserves the per-scan resolving power, so the value DIA-NN needs is
+    already in the file -- no vendor reader required. First value seen is MS1, the
+    most common subsequent one is MS2.
+    """
+    import re, collections
+    try:
+        with open(path, "rb") as fh:
+            head = fh.read(max_bytes).decode("utf-8", "replace")
+    except OSError:
+        return None, None
+    vals = [float(v) for v in
+            re.findall(r'MS:1000800"[^/]*?value="([0-9.]+)"', head)]
+    if not vals:
+        return None, None
+    ms1 = max(vals)                                  # MS1 is acquired at higher res
+    others = [v for v in vals if v != ms1]
+    ms2 = collections.Counter(others).most_common(1)[0][0] if others else ms1
+    return ms1, ms2
 
 
 def tagged(value, source):
@@ -198,6 +274,12 @@ def main():
     ap.add_argument("--instrument", default="")
     ap.add_argument("--var-mods", default="", help="comma list, e.g. 'ox' to add Ox(M)")
     ap.add_argument("--overrides", default="", help="JSON of fields to force (validated SOP)")
+    ap.add_argument("--ms1-resolution", type=float, default=0,
+                    help="Orbitrap MS1 resolving power; maps to ppm via DIA-NN's table")
+    ap.add_argument("--ms2-resolution", type=float, default=0,
+                    help="Orbitrap MS2 resolving power; maps to ppm via DIA-NN's table")
+    ap.add_argument("--from-mzml", default="",
+                    help="read both resolutions straight out of this mzML")
     ap.add_argument("--fasta-meta", default="",
                     help="fetch_fasta.py's <fasta>.meta.json — supplies the contaminant "
                          "tag so DIA-NN excludes contaminants from quant")
@@ -219,7 +301,13 @@ def main():
         except json.JSONDecodeError as e:
             sys.exit(f"--overrides is not valid JSON: {e}")
 
-    cls, ms1, ms2, label, src = classify_instrument(a.instrument)
+    r1, r2 = a.ms1_resolution, a.ms2_resolution
+    if a.from_mzml and not (r1 and r2):
+        r1, r2 = read_mzml_resolution(a.from_mzml)
+        if r1:
+            print(f"[estimate_params] read resolution from {os.path.basename(a.from_mzml)}: "
+                  f"MS1 {int(r1):,} / MS2 {int(r2):,}", file=sys.stderr)
+    cls, ms1, ms2, label, src = classify_instrument(a.instrument, r1, r2)
     var_mods = [v.strip().lower() for v in a.var_mods.split(",") if v.strip()]
 
     if a.engine == "diann":
