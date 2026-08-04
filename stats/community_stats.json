@@ -1,27 +1,15 @@
 {
-  "updated_at": "2026-08-03T09:52:16+00:00",
+  "updated_at": "2026-08-04T08:42:45+00:00",
   "github": {
-    "clones_14d": 403,
-    "unique_users_14d": 90,
-    "views_14d": 65,
-    "unique_visitors_14d": 18,
+    "clones_14d": 425,
+    "unique_users_14d": 106,
+    "views_14d": 68,
+    "unique_visitors_14d": 17,
     "stars": 9,
     "forks": 1
   },
   "trends": {
     "clones": [
-  {
-    "date": "2026-07-18",
-    "count": 3
-  },
-  {
-    "date": "2026-07-19",
-    "count": 3
-  },
-  {
-    "date": "2026-07-20",
-    "count": 5
-  },
   {
     "date": "2026-07-21",
     "count": 2
@@ -65,21 +53,21 @@
   {
     "date": "2026-07-31",
     "count": 15
+  },
+  {
+    "date": "2026-08-01",
+    "count": 7
+  },
+  {
+    "date": "2026-08-02",
+    "count": 8
+  },
+  {
+    "date": "2026-08-03",
+    "count": 12
   }
 ],
     "views": [
-  {
-    "date": "2026-07-18",
-    "count": 0
-  },
-  {
-    "date": "2026-07-19",
-    "count": 0
-  },
-  {
-    "date": "2026-07-20",
-    "count": 1
-  },
   {
     "date": "2026-07-21",
     "count": 1
@@ -123,6 +111,18 @@
   {
     "date": "2026-07-31",
     "count": 2
+  },
+  {
+    "date": "2026-08-01",
+    "count": 1
+  },
+  {
+    "date": "2026-08-02",
+    "count": 1
+  },
+  {
+    "date": "2026-08-03",
+    "count": 0
   }
 ]
   },
