@@ -589,6 +589,8 @@ unmonitored.** Poll with `watch_run.sh` in a loop until it finishes:
 bash scripts/watch_run.sh --log <search log> --out <search out dir> --poll <n>
 # SLURM on HIVE:
 bash scripts/watch_run.sh --slurm <jobid> --log <job log> --out <out> --poll <n> --hive
+# multi-step chains (diann_parallel / radiant_parallel): watch EVERY step, never just the last
+bash scripts/watch_run.sh --all <search out dir> --hive
 ```
 **Always pass `--out` and increment `--poll` each time.** `--out` is what turns "still
 running" into real progress: the chain drops a `.quant` per finished file, so the watcher
@@ -629,9 +631,55 @@ once `COMPLETED` and `report.parquet` exists. → detail: `references/watcher.md
 Rscript scripts/run_de.R --input ./search_out/report.parquet \
     --metadata conditions.csv --method <dpc|maxlfq> --outdir ./de_results
 ```
-Use the `de.method` from the bundle (`dpc` for DIA-NN/limpa, `maxlfq` for
-Sage/FragPipe). Writes `DE_<method>_<contrast>.csv` + `Expression_Matrix.csv` +
+**`dpc` (limpa) is THE DEFAULT — use it unless the user asks otherwise or the data
+cannot support it.** limpa models the detection-probability curve and quantifies from
+precursor intensities directly, so it uses the whole measurement rather than a
+pre-collapsed protein number. Don't switch away from it because a bundle happens to
+say `maxlfq`; switch only for the two reasons below.
+
+Use `maxlfq` when **either**:
+1. **The user asks for it** — e.g. they want QuantUMS quality filtering (below), or
+   to match a previous MaxLFQ-based analysis.
+2. **The input cannot support limpa.** `readDIANN()` needs PRECURSOR-level columns
+   (`Precursor.Id`, `Precursor.Normalised`). What matters is *which file you point at*,
+   not which engine ran:
+
+   | engine | file to use for `dpc` | verified |
+   |---|---|---|
+   | DIA-NN | `search_out/report.parquet` (native) | yes |
+   | FragPipe | `dia-quant-output/report.tsv` + `--format tsv` | yes — its DIA route bundles DIA-NN, so this **is** a DIA-NN report, `Lib.Q.Value`/`Lib.PG.Q.Value` included |
+   | Radiant | `radiant_to_delimp.py --out <x>.parquet` | yes |
+
+   What does **not** work is the *adapted* `report.parquet` from `adapt_sage` /
+   `adapt_fragpipe` / `adapt_radiant` — those deliberately collapse to one row per
+   protein × run to feed the maxlfq path. `run_de.R` checks up front and names the
+   precursor-level file to use instead.
+
+Writes `DE_<method>_<contrast>.csv` + `Expression_Matrix.csv` +
 `methods.txt` + `sessionInfo.txt` + `de_provenance.json` (exact R package versions).
+
+**QuantUMS quality filtering — opt-in, `--method maxlfq`, DIA-NN input only.**
+Only reach for this when the user asks. DIA-NN's
+QuantUMS scores how well MS1 and MS2 agree for each measurement, and filtering on it
+trades depth for quantitative reliability:
+
+| flag | column | default | what it does |
+|---|---|---|---|
+| `--eq-cutoff` | `Empirical.Quality` | 0 (off) | drop precursors whose empirical quality is below this |
+| `--pgq-cutoff` | `PG.MaxLFQ.Quality` | 0 (off) | drop protein groups whose MaxLFQ quality is below this |
+| `--coverage-min` | — | 0.5 | require a protein in ≥ this fraction of samples before testing |
+
+Both QuantUMS cutoffs are **off by default** — they discard real measurements, so
+they are the user's call, not a silent default. Offer them when quantitative
+precision matters more than depth (small fold-changes, few replicates), say roughly
+how many proteins each costs, and record the choice: the counts land in
+`filters_applied` and flow into `methods.txt`. They need DIA-NN input — the columns
+don't exist in Sage/FragPipe/Radiant output, and the filter is skipped if absent.
+
+`--coverage-min` is different: it is **on** at 0.5 because a protein seen in one or
+two samples is an on/off observation, and letting such rows into `eBayes` destabilises
+the variance moderation for *every* protein, not just those rows.
+
 → detail: `references/de-analysis.md`.
 
 ### 8b. Generate figures

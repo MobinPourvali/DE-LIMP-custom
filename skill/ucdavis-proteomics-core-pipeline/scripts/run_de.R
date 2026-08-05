@@ -56,6 +56,9 @@ contrasts <- getarg("--contrasts", NULL)
 q_cutoff  <- as.numeric(getarg("--q-cutoff", "0.01"))
 eq_cutoff <- as.numeric(getarg("--eq-cutoff", "0"))
 pgq_cutoff<- as.numeric(getarg("--pgq-cutoff", "0"))
+# Fraction of samples a protein must be quantified in to be TESTED (maxlfq path).
+# 0.5 matches DE-LIMP's default and the UC Davis Bioinformatics Core recommendation.
+cov_min_frac <- as.numeric(getarg("--coverage-min", "0.5"))
 outdir    <- getarg("--outdir", "de_results")
 # --logfc is a REFERENCE LINE ONLY -- it is drawn and labelled on the volcano and never
 # filters anything. Significance is the BH-adjusted p-value alone, which is the exact
@@ -89,13 +92,63 @@ message(sprintf("[run_de] method=%s  q=%.3f  samples=%d  covariates=%s",
 
 descriptor <- NULL
 
+# limpa/DPC is the DEFAULT path. It needs PRECURSOR-level input: readDIANN() keys on
+# Precursor.Id + Precursor.Normalised. DIA-NN's native report.parquet has them; the
+# adapters for Sage/FragPipe/Radiant collapse to one protein x run row, so limpa
+# cannot run on their output. Check up front and say so in one line, rather than
+# letting limpa fail deep inside with a column error the user cannot act on.
 if (method == "dpc") {
+  have_cols <- tryCatch({
+    if (identical(format, "parquet")) names(arrow::open_dataset(input)$schema)
+    else names(utils::read.delim(input, nrows = 1, check.names = FALSE))
+  }, error = function(e) character(0))
+  need_dpc <- c("Precursor.Id", "Precursor.Normalised")
+  miss_dpc <- setdiff(need_dpc, have_cols)
+  if (length(have_cols) > 0 && length(miss_dpc) > 0)
+    stop(sprintf(paste0(
+      "--method dpc (limpa) needs PRECURSOR-level input but %s has no %s.\n",
+      "  Precursor-level reports that DO work with dpc:\n",
+      "    DIA-NN   search_out/report.parquet          (native)\n",
+      "    FragPipe dia-quant-output/report.tsv        (--format tsv; its DIA route\n",
+      "             bundles DIA-NN, so this IS a DIA-NN report)\n",
+      "    Radiant  radiant_to_delimp.py --out <x>.parquet\n",
+      "  What does NOT work is the ADAPTED report.parquet from adapt_sage /\n",
+      "  adapt_fragpipe / adapt_radiant -- those collapse to one row per protein x\n",
+      "  run for the maxlfq path. Point --input at the precursor-level file above,\n",
+      "  or use --method maxlfq."),
+      basename(input), paste(miss_dpc, collapse = " / ")))
+
   if (!requireNamespace("limpa", quietly = TRUE))
     stop("limpa is required for --method dpc. BiocManager::install('limpa') (needs R 4.5+, Bioc 3.22+).")
   suppressMessages({ library(limpa); library(limma) })
 
-  dat <- limpa::readDIANN(input, format = format, q.cutoffs = q_cutoff)
-  message(sprintf("[run_de] readDIANN: %d precursors x %d runs", nrow(dat$E), ncol(dat$E)))
+  # readDIANN() prints "Q-value columns <x> not found." for a missing q-column and
+  # then CARRIES ON with that filter simply not applied -- a message, not an error,
+  # easy to lose in a long log. Resolving against the real header instead means the
+  # run log states exactly which FDR filters were applied, and a report with no usable
+  # q-column stops rather than producing unfiltered results that look filtered.
+  # (FragPipe's own report.tsv does carry Lib.Q.Value / Lib.PG.Q.Value -- columns 39
+  # and 40 -- so it needs no special handling; it works with limpa's defaults.)
+  q_want <- c("Q.Value", "Lib.Q.Value", "Lib.PG.Q.Value")
+  q_alt  <- c("Global.Q.Value", "Global.PG.Q.Value", "PG.Q.Value")
+  q_use  <- intersect(q_want, have_cols)
+  q_extra <- intersect(setdiff(q_alt, q_use), have_cols)
+  if (length(setdiff(q_want, have_cols)) > 0) {
+    q_use <- unique(c(q_use, q_extra))
+    message(sprintf(paste0("[run_de] this report has no %s; limpa would apply NO filter ",
+                           "for those columns without saying so. Filtering on %s instead."),
+                    paste(setdiff(q_want, have_cols), collapse = " / "),
+                    paste(q_use, collapse = " / ")))
+  }
+  if (length(q_use) == 0)
+    stop("No usable q-value column found in ", basename(input),
+         " -- cannot apply identification FDR. Columns present: ",
+         paste(have_cols, collapse = ", "))
+
+  dat <- limpa::readDIANN(input, format = format, q.cutoffs = q_cutoff,
+                          q.columns = q_use)
+  message(sprintf("[run_de] readDIANN: %d precursors x %d runs (FDR %.3f on %s)",
+                  nrow(dat$E), ncol(dat$E), q_cutoff, paste(q_use, collapse = ", ")))
 
   dpcfit    <- limpa::dpcCN(dat)
   y_protein <- limpa::dpcQuant(dat, "Protein.Group", dpc = dpcfit)
@@ -129,6 +182,33 @@ if (method == "dpc") {
   descriptor <- ml$descriptor
   message(sprintf("[run_de] MaxLFQ matrix: %d proteins x %d runs (%.1f%% missing)",
                   nrow(E), ncol(E), 100 * mean(is.na(E))))
+
+  # ---- coverage filter (ported from DE-LIMP server_data.R) -----------------
+  # The MaxLFQ matrix keeps every protein seen in ANY run, so rows with 1-2
+  # finite values reach limma. eBayes then moderates variance against rows whose
+  # variance is barely estimable, which destabilises the whole fit -- not just
+  # those rows. Require a protein to be quantified in at least `--coverage-min`
+  # of samples before testing; the rest are an on/off observation, not a
+  # differential-abundance result.
+  n_samples     <- ncol(E)
+  min_obs       <- max(2, ceiling(cov_min_frac * n_samples))
+  n_obs_per_row <- rowSums(!is.na(E))
+  keep_cov      <- n_obs_per_row >= min_obs
+  n_dropped     <- sum(!keep_cov)
+  message(sprintf("[run_de] coverage filter: keep proteins with >= %d/%d non-NA (%.0f%%). Kept %d, dropped %d.",
+                  min_obs, n_samples, 100 * cov_min_frac, sum(keep_cov), n_dropped))
+  if (sum(keep_cov) < 10)
+    stop(sprintf(paste0("Coverage filter left only %d testable proteins (needed >= %d non-NA ",
+                        "of %d samples). Loosen --coverage-min, or the QuantUMS cutoffs ",
+                        "(--eq-cutoff / --pgq-cutoff) if those are doing the damage."),
+                 sum(keep_cov), min_obs, n_samples))
+  E <- E[keep_cov, , drop = FALSE]
+  if (!is.null(genes) && nrow(genes) == length(keep_cov))
+    genes <- genes[keep_cov, , drop = FALSE]
+  prev_filters <- if (is.null(descriptor$filters_applied)) character(0) else descriptor$filters_applied
+  descriptor$filters_applied <- c(prev_filters,
+    sprintf("coverage >= %d/%d non-NA samples (%.0f%%); %d proteins dropped",
+            min_obs, n_samples, 100 * cov_min_frac, n_dropped))
 }
 
 # ---- align metadata to the matrix columns -----------------------------------

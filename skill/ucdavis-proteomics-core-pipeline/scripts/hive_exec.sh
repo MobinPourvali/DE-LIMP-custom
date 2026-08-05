@@ -18,7 +18,13 @@
 # Heavy compute must go through SLURM (sbatch), never the login node.
 # =============================================================================
 set -uo pipefail
-HU="${HIVE_USER:?set HIVE_USER (ask the user for their HIVE username)}"
+# Env vars do not survive between tool calls / shells, so requiring HIVE_USER in the
+# environment means every helper that shells out (watch_run.sh especially) silently
+# fails with an empty result -- which downstream code reads as "nothing there".
+# Persist it once to a config file and every later invocation just works.
+CFG="${HIVE_ENV_FILE:-$HOME/.config/ucdavis-proteomics/hive.env}"
+if [ -z "${HIVE_USER:-}" ] && [ -f "$CFG" ]; then . "$CFG"; fi
+HU="${HIVE_USER:?set HIVE_USER, or save it once: mkdir -p ~/.config/ucdavis-proteomics && printf \'HIVE_USER=<user>\\nHIVE_KEY=~/.ssh/id_ed25519\\n\' > ~/.config/ucdavis-proteomics/hive.env}"
 KEY="${HIVE_KEY:?set HIVE_KEY to the private-key path the user gave you}"
 KEY="${KEY/#\~/$HOME}"
 HOST="${HIVE_HOST:-hive.hpc.ucdavis.edu}"
@@ -29,5 +35,9 @@ case "${1:-}" in
   --put) shift; rsync -e "ssh -i $KEY -o IdentitiesOnly=yes" -a "$1" "$HU@$HOST:$2" ;;
   --get) shift; rsync -e "ssh -i $KEY -o IdentitiesOnly=yes" -a "$HU@$HOST:$1" "$2" ;;
   "")    echo "usage: hive_exec.sh '<command>' | --put <local> <remote> | --get <remote> <local>" >&2; exit 2 ;;
-  *)     "${SSH[@]}" "$@" ;;
+  # LOGIN shell (bash -l). ssh with a bare command runs a NON-login shell, where
+  # HIVE does not put sacct/squeue/sbatch on PATH. Every SLURM query then returned
+  # nothing, and watch_run.sh read that emptiness as "PENDING" -- so a job array with
+  # 14 TIMEOUT tasks reported as still running. Silence must never look like health.
+  *)     "${SSH[@]}" "bash -l -c $(printf '%q' "$*")" ;;
 esac
