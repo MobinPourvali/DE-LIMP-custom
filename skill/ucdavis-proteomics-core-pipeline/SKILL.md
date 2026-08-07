@@ -474,7 +474,10 @@ python3 scripts/run_search.py --tools ~/.proteomics-pipeline/tools/tools.json \
     Radiant route **also needs DIA-NN acquired**.
   - ⚠ **`--libfree` is a misnomer.** In Radiant's CLI it is the same switch as
     `--no-mbr`, so it selects single-pass vs match-between-runs — it does **not**
-    mean "no library". Use `--mbr` for the two-pass route.
+    mean "no library". **MBR is ON by default in this skill** (`--no-mbr` to disable),
+    because the DIA-NN chain builds an empirical library from all runs and re-searches
+    against it; leaving Radiant single-pass makes it the only engine without cross-run
+    information and understates it. Seer's shipped example TOML has `mbr = false`.
   - **On a cluster, this parallelises automatically.** Radiant's own backend is
     serial (`NotImplementedError` for parallel mode), so N files would cost N × one
     file. But the *search* is per-file independent — only rescoring/FDR/inference/

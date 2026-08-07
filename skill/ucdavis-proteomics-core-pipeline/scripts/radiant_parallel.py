@@ -117,7 +117,14 @@ def main():
     ap.add_argument("--partition"); ap.add_argument("--account"); ap.add_argument("--qos")
     ap.add_argument("--max-simultaneous", type=int, default=20)
     ap.add_argument("--fdr-thresh", type=float, default=0.01)
-    ap.add_argument("--mbr", action="store_true")
+    # MBR ON by default. Seer's example TOML ships mbr=false, but our DIA-NN chain
+    # builds an empirical library from ALL runs (step 3 --gen-spec-lib) and re-searches
+    # against it, which is cross-run information sharing. Leaving Radiant at mbr=false
+    # while DIA-NN does that makes any head-to-head comparison unfair to Radiant --
+    # measured on the Poplar 6x3 set, Radiant without MBR had only 52.3% of its proteins
+    # present in all 18 runs vs DIA-NN's 70.1%. Use --no-mbr to reproduce Seer's default.
+    ap.add_argument("--mbr", action=argparse.BooleanOptionalAction, default=True,
+                    help="match-between-runs (default: on, for parity with the DIA-NN two-pass chain)")
     a = ap.parse_args()
 
     files = [ln.strip() for ln in open(a.raw_list) if ln.strip()]

@@ -425,7 +425,7 @@ def run_radiant_parallel(tools, params, files, fasta, out, threads, a, library=N
     return info
 
 
-def run_radiant(tools, params, files, fasta, out, threads, sbatch, library=None, mbr=False):
+def run_radiant(tools, params, files, fasta, out, threads, sbatch, library=None, mbr=True):
     os.makedirs(out, exist_ok=True)
     bad = [f for f in files if f.rstrip("/").lower().endswith(".d")]
     if bad:
@@ -1016,8 +1016,13 @@ def main():
     ap.add_argument("--allow-inline", action="store_true",
                     help="permit an inline search on a host where sbatch exists "
                          "(only inside an salloc/srun allocation)")
-    ap.add_argument("--mbr", action="store_true",
-                    help="Radiant: run match-between-runs (two-pass) instead of single-pass")
+    # Default ON: the DIA-NN chain shares information across runs (step 3 builds an
+    # empirical library from ALL files, step 4 re-searches against it). Radiant at
+    # mbr=false would be the only engine searching each file in isolation, which
+    # understates it in any comparison. --no-mbr restores Seer's shipped default.
+    ap.add_argument("--mbr", action=argparse.BooleanOptionalAction, default=True,
+                    help="Radiant: match-between-runs / two-pass (default: on, for "
+                         "parity with the DIA-NN two-pass chain). --no-mbr = single-pass.")
     ap.add_argument("--sbatch", help="emit an sbatch script at this path instead of running inline")
     ap.add_argument("--parallel-threshold", type=int, default=5,
                     help="DIA-NN: use the 5-step SLURM chain above this many files (default 5)")

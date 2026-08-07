@@ -36,6 +36,26 @@ reflects a shallower, more conservative list, not a better matrix.
 **Radiant is last on every measure**, and its sparsity is real rather than an artefact of
 depth: it is both the shallowest (3,201 PG) *and* the least complete (52.3% in all runs).
 
+## ⚠️ The Radiant column is a HANDICAPPED run — superseded
+
+Checking the run against Seer's repo (2026-08-06) turned up a structural asymmetry:
+
+| | cross-run information sharing? |
+|---|---|
+| DIA-NN | **yes** — step 3 searches all 18 files together with `--gen-spec-lib --rt-profiling --use-quant` to build `empirical.parquet`, step 4 re-searches each file against it (classic two-pass; no `--reanalyse` needed) |
+| Spectronaut | **yes** — cross-run alignment |
+| Radiant (this run) | **no** — each file searched in isolation, Fulcrum combined them with `mbr = false` |
+
+`mbr = false` is Seer's own shipped default and our config matched their example TOML
+field-for-field, so the run was *correct*. It was not *comparable*: Radiant was the only
+engine denied cross-run evidence, which is exactly the mechanism that fills a data matrix.
+Its 52.3%-in-all-runs is therefore not a like-for-like number.
+
+Re-run with `mbr = true` (SLURM 20090356, reusing the same 18 per-file searches so only
+MBR differs). **Numbers below for Radiant are pending replacement.**
+
+The skill now defaults Radiant MBR **on** (`--no-mbr` to restore Seer's default).
+
 ## Confounds — do not quote these numbers as a clean engine benchmark
 
 1. **The libraries are not the same.** Spectronaut used its own project library; DIA-NN
