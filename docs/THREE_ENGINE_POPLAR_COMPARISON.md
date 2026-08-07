@@ -9,52 +9,45 @@ match on basename, never on extension.)
 
 ## Results
 
-| | Spectronaut (FRAN, 2022) | **DIA-NN 2.6** (2026) | Radiant + Fulcrum (2026) |
-|---|---|---|---|
-| Protein groups, total | 3,545 | **4,693** | 3,201 |
-| Precursors, total | n/a¹ | 29,718 | 21,370 |
-| Median PG per run | ~3,470 | **4,149** | 2,578 |
-| PG quantified in **all 18** runs | 3,180 | **3,288** | 1,675 |
-| — as % of that engine's total | **89.7%** | 70.1% | 52.3% |
-| Matrix completeness | **98.1%** | 87.5% | 80.2% |
+| | Spectronaut (FRAN, 2022) | **DIA-NN 2.6** (2026) | Radiant + Fulcrum, **MBR on** | Radiant, MBR off (superseded) |
+|---|---|---|---|---|
+| Protein groups, total | 3,545 | **4,693** | 3,178 | 3,201 |
+| Precursors, total | n/a¹ | 29,718 | 21,343 | 21,370 |
+| Median PG per run | ~3,470 | **4,149** | 3,106 | 2,578 |
+| PG quantified in **all 18** runs | 3,180 | **3,288** | 2,777 | 1,675 |
+| — as % of that engine's total | 89.7% | 70.1% | **87.4%** | 52.3% |
+| Matrix completeness | **98.1%** | 87.5% | 97.5% | 80.2% |
 
 ¹ FRAN stores Spectronaut rows without `precursor_id_diann`, so a distinct-precursor
 count is not comparable on that side. Per-run precursor rows were 22,268–24,891.
 
-## Reading this table
+## What MBR changed, and what it did not
 
-**DIA-NN wins on depth**: +32% protein groups over Spectronaut and +47% over Radiant,
-and the highest median per run.
+Turning MBR on (SLURM 20105472, same 18 per-file searches reused for pass 1, so **only**
+MBR differs):
 
-**Do not read the completeness percentages as a quality ranking.** That column is
-denominator-sensitive — a deeper search necessarily reaches further into low-abundance
-proteins that are not seen in every run, which lowers the percentage while *increasing*
-the absolute number of fully-observed proteins. In absolute terms DIA-NN also has the
-most proteins present in all 18 runs (3,288 vs Spectronaut's 3,180). Spectronaut's 98.1%
-reflects a shallower, more conservative list, not a better matrix.
+| | MBR off | MBR on | change |
+|---|---|---|---|
+| Total PG | 3,201 | 3,178 | −0.7% (flat) |
+| PG in all 18 runs | 1,675 | 2,777 | **+66%** |
+| Matrix completeness | 80.2% | 97.5% | **+17.3 pts** |
+| Median PG per run | 2,578 | 3,106 | +20% |
 
-**Radiant is last on every measure**, and its sparsity is real rather than an artefact of
-depth: it is both the shallowest (3,201 PG) *and* the least complete (52.3% in all runs).
+This is exactly the signature of match-between-runs: it does **not** find new proteins,
+it finds already-identified ones in more runs. Radiant's data matrix is now as complete
+as Spectronaut's (97.5% vs 98.1%) and more complete than DIA-NN's.
 
-## ⚠️ The Radiant column is a HANDICAPPED run — superseded
+**The sparsity criticism in the first version of this document was an artefact of our
+configuration, not a property of Radiant.** It has been withdrawn.
 
-Checking the run against Seer's repo (2026-08-06) turned up a structural asymmetry:
+**The depth gap is real and survives.** DIA-NN finds 4,693 protein groups to Radiant's
+3,178 (+48%) and 4,149 per run to Radiant's 3,106 (+34%). That is the substantive
+finding, and MBR does not touch it.
 
-| | cross-run information sharing? |
-|---|---|
-| DIA-NN | **yes** — step 3 searches all 18 files together with `--gen-spec-lib --rt-profiling --use-quant` to build `empirical.parquet`, step 4 re-searches each file against it (classic two-pass; no `--reanalyse` needed) |
-| Spectronaut | **yes** — cross-run alignment |
-| Radiant (this run) | **no** — each file searched in isolation, Fulcrum combined them with `mbr = false` |
-
-`mbr = false` is Seer's own shipped default and our config matched their example TOML
-field-for-field, so the run was *correct*. It was not *comparable*: Radiant was the only
-engine denied cross-run evidence, which is exactly the mechanism that fills a data matrix.
-Its 52.3%-in-all-runs is therefore not a like-for-like number.
-
-Re-run with `mbr = true` (SLURM 20090356, reusing the same 18 per-file searches so only
-MBR differs). **Numbers below for Radiant are pending replacement.**
-
-The skill now defaults Radiant MBR **on** (`--no-mbr` to restore Seer's default).
+On the percentage column: it is denominator-sensitive. DIA-NN's 70.1% is the lowest
+precisely because its denominator is the largest; in absolute terms DIA-NN still has the
+most proteins present in all 18 runs (3,288, vs Spectronaut 3,180 and Radiant 2,777).
+Do not read that column as a quality ranking.
 
 ## Confounds — do not quote these numbers as a clean engine benchmark
 
