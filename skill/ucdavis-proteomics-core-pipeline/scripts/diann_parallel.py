@@ -116,6 +116,21 @@ def mass_acc_status(cfg):
             "reason": f"fixed (MS1 {ms1} ppm / MS2 {ms2} ppm / window {int(win)})"}
 
 
+# DIA-NN 2.6 EXITS 0 ON A FATAL ERROR -- verified: a run against a nonexistent .mzML and
+# a nonexistent library prints "ERROR: ..." and returns exit code 0. Since DIA-NN is the
+# last command in every step, SLURM records COMPLETED, watch_run.sh reports success, and
+# the afterok dependency releases the next step. A step-4 task that dies this way simply
+# leaves no .quant, and step 5 then builds the cross-run report from the survivors and
+# calls it done -- a silently DROPPED SAMPLE. Exit status is therefore not trustworthy;
+# every step must assert that the artefact it was supposed to produce actually exists.
+def must_exist(path, what):
+    """Bash that fails the job unless `path` exists and is non-empty."""
+    return (f'if [ ! -s "{path}" ]; then '
+            f'echo "FAILED: DIA-NN exited 0 but did not write {what}: {path}" >&2; '
+            f'echo "(DIA-NN 2.6 returns 0 on fatal errors -- check the log above for ERROR:)" >&2; '
+            f'exit 1; fi')
+
+
 def header(name, cpus, mem_gb, hours, partition, account, qos=None, array=None):
     h = ["#!/bin/bash -l",
          f"#SBATCH --job-name={name}",
@@ -268,7 +283,8 @@ def main():
             f'echo "Step 1/5 library prediction"; date',
             f'{DN} --fasta {fasta} --fasta-search --predictor --gen-spec-lib \\',
             f'  --out-lib {D}/step1.speclib --out {D}/step1_lib.parquet \\',
-            f'  --threads {a.libpred_cpus} {flags}']))
+            f'  --threads {a.libpred_cpus} {flags}',
+            must_exist(predicted, "the predicted spectral library")]))
 
     # Step 2 — first pass (array): predicted lib -> per-file .quant
     s2 = write("step2_firstpass.sbatch", "\n".join([
@@ -276,7 +292,9 @@ def main():
         f'echo "Step 2/5 first pass, task ${{SLURM_ARRAY_TASK_ID}} of {n}"; date', pick,
         f'{DN} --f "$FILE" --fasta {fasta} --lib {predicted} \\',
         f'  --temp {D}/quant_step2 --rt-profiling --gen-spec-lib --quant-ori-names \\',
-        f'  --threads {a.threads_per_file} {flags}']))
+        f'  --threads {a.threads_per_file} {flags}',
+        'QOUT="${FILE##*/}"; QOUT="${QOUT%.*}.quant"',
+        must_exist(f'{D}/quant_step2/$QOUT', "this file's .quant")]))
 
     # Step 3 — empirical library assembly (single job, --use-quant)
     s3 = write("step3_assembly.sbatch", "\n".join([
@@ -286,7 +304,8 @@ def main():
         f'{DN} {all_f} --fasta {fasta} --lib {predicted} --use-quant --quant-ori-names \\',
         f'  --rt-profiling --gen-spec-lib --out-lib {empirical} \\',
         f'  --temp {D}/quant_step2 --out {D}/step3_assembly.parquet \\',
-        f'  --threads {a.assembly_cpus} {flags}']))
+        f'  --threads {a.assembly_cpus} {flags}',
+        must_exist(empirical, "the empirical spectral library")]))
 
     # Step 4 — final pass (array): empirical lib -> per-file .quant
     s4 = write("step4_finalpass.sbatch", "\n".join([
@@ -304,7 +323,8 @@ def main():
         'trap \'rm -rf "$LIBPRIV"\' EXIT',
         f'{DN} --f "$FILE" --fasta {fasta} --lib "$LIBPRIV/lib.parquet" \\',
         f'  --temp {D}/quant_step4 --no-ifs-removal --quant-ori-names \\',
-        f'  --threads {a.threads_per_file} {flags}']))
+        f'  --threads {a.threads_per_file} {flags}',
+        must_exist(f'{D}/quant_step4/$QUANT', "this file's final-pass .quant")]))
 
     # Step 5 — cross-run report (single job, --use-quant --matrices)
     s5 = write("step5_report.sbatch", "\n".join([
@@ -312,7 +332,18 @@ def main():
         f'echo "Step 5/5 cross-run report"; date',
         f'{DN} {all_f} --fasta {fasta} --lib {empirical} --use-quant --quant-ori-names \\',
         f'  --temp {D}/quant_step4 --matrices --out {D}/{report} \\',
-        f'  --threads {a.assembly_cpus} {norm} {flags}']))
+        f'  --threads {a.assembly_cpus} {norm} {flags}',
+        must_exist(f'{D}/{report}', "the cross-run report"),
+        # A step-4 task that failed silently leaves no .quant, and step 5 happily
+        # reports on whatever survived. Count them: fewer quants than inputs means a
+        # sample was dropped, which must never pass as success.
+        f'NQ=$(ls -1 {D}/quant_step4/*.quant 2>/dev/null | wc -l | tr -d " ")',
+        f'if [ "$NQ" -ne {n} ]; then '
+        f'echo "FAILED: report built from $NQ of {n} runs -- a step-4 task produced no .quant." >&2; '
+        f'echo "Find it: for f in \\$(cat {D}/file_list.txt); do b=\\$(basename \\"\\$f\\"); '
+        f'[ -f {D}/quant_step4/\\${{b%.*}}.quant ] || echo MISSING \\$b; done" >&2; '
+        f'exit 1; fi',
+        f'echo "OK: report built from all {n} runs"']))
 
     # submit.sh — chain the steps with afterok dependencies
     sub_lines = ["#!/bin/bash", "set -euo pipefail", f'cd "{out}"',

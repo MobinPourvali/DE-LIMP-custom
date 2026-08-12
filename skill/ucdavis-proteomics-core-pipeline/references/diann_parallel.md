@@ -195,3 +195,26 @@ calibration, well before the search completes), so it costs minutes, not a full 
 One file is enough for a set acquired with the same method; re-probe for a different
 gradient, cycle time, or instrument.
 
+## DIA-NN exits 0 on fatal errors — never trust the job state alone
+
+Verified on DIA-NN 2.6.0: a run against a nonexistent `.mzML` and a nonexistent library
+prints `ERROR: ...` and **returns exit code 0**.
+
+DIA-NN is the last command in every generated step, so the step inherits that 0. SLURM
+records `COMPLETED`, `watch_run.sh` reports success, and the `afterok` dependency
+releases the next step. A step-4 array task that dies this way leaves no `.quant`, and
+step 5 then builds the cross-run report from whatever survived — **a silently dropped
+sample, reported as a clean run.**
+
+Every step therefore asserts its own artefact:
+
+| step | asserts |
+|---|---|
+| 1 | the predicted spectral library exists and is non-empty |
+| 2 | this task's `.quant` was written to `quant_step2/` |
+| 3 | the empirical spectral library exists |
+| 4 | this task's `.quant` was written to `quant_step4/` |
+| 5 | `report.parquet` exists **and** `quant_step4/` holds exactly one `.quant` per input |
+
+Step 5's count check is the backstop: it is the only place that can notice a sample went
+missing several steps earlier. On failure it prints the loop that names the missing file.
