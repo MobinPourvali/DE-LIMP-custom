@@ -165,3 +165,33 @@ precursors unique to un-subsetted runs. When that matters, build Phase 1 over al
   and the paths must be inside the bound mounts.
 - Like the other engine paths, **validate the first real parallel run** end-to-end on
   HIVE before trusting it for production.
+
+## Scan window MUST be pinned (not just mass accuracy)
+
+Steps 3/5 reuse the `.quant` files written by steps 2/4. DIA-NN warns:
+
+> WARNING: combining reuse of .quant files with automatic optimisation of mass
+> accuracies **or scan window** will lead to results that are different from those of
+> the original analysis that produced the .quant files and is strongly not recommended
+
+`estimate_params.py` pins mass accuracy but omits `--window`, which means DIA-NN
+optimises the radius **per file**. On a real 18-file poplar run that gave a radius of
+**7 for seventeen files and 8 for one**, and the chain combined them anyway.
+
+`mass_acc_status()` now treats a missing or `0` `--window` as NOT parallel-safe, so the
+chain refuses to generate rather than producing a quietly-inconsistent report.
+
+Get the value by measuring it, never by guessing — it depends on the acquisition scheme
+(cycle time vs peak width), not the instrument model:
+
+```bash
+# after step 1 has produced the predicted library
+python3 scripts/probe_window.py --diann "<diann cmd>" --raw <one file> \
+    --fasta <f.fasta> --lib <step1.predicted.speclib> --write-cfg <params.cfg>
+```
+
+It terminates as soon as DIA-NN logs `Scan window radius set to N` (printed during
+calibration, well before the search completes), so it costs minutes, not a full pass.
+One file is enough for a set acquired with the same method; re-probe for a different
+gradient, cycle time, or instrument.
+

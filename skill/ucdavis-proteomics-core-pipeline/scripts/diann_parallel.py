@@ -72,12 +72,23 @@ def read_cfg_flags(cfg):
 
 
 def mass_acc_status(cfg):
-    """Is mass accuracy FIXED (manual) in this cfg? Steps 3/5 reuse the .quant files
-    from steps 2/4, so auto-calibration would be applied inconsistently between passes
-    (per DIA-NN dev guidance) -- the chain is only valid with pinned values. This is the
-    single definition of "is this cfg parallel-safe"; run_search.py imports it to decide
-    whether it may auto-route. Returns {fixed, ms2, ms1, reason}."""
-    vals = {"--mass-acc": None, "--mass-acc-ms1": None}
+    """Is this cfg PARALLEL-SAFE? Steps 3/5 reuse the .quant files from steps 2/4, so
+    anything DIA-NN auto-optimises per file is applied inconsistently between passes
+    and then stitched together. DIA-NN says so itself:
+
+        WARNING: combining reuse of .quant files with automatic optimisation of mass
+        accuracies OR SCAN WINDOW will lead to results that are different from those
+        of the original analysis that produced the .quant files and is strongly not
+        recommended
+
+    So this checks BOTH mass accuracy and --window. Checking only mass accuracy was a
+    real defect: on an 18-file poplar run with mass accuracy correctly pinned, DIA-NN
+    still inferred a scan-window radius of 7 for seventeen files and 8 for one, emitted
+    the warning above, and the chain combined them anyway.
+
+    This is the single definition of "is this cfg parallel-safe"; run_search.py imports
+    it to decide whether it may auto-route. Returns {fixed, ms2, ms1, window, reason}."""
+    vals = {"--mass-acc": None, "--mass-acc-ms1": None, "--window": None}
     if cfg and os.path.exists(cfg):
         try:
             toks = shlex.split(open(cfg).read(), comments=True)
@@ -89,19 +100,20 @@ def mass_acc_status(cfg):
                     vals[t] = float(toks[i + 1])
                 except ValueError:
                     pass
-    ms2, ms1 = vals["--mass-acc"], vals["--mass-acc-ms1"]
-    pairs = (("--mass-acc", ms2), ("--mass-acc-ms1", ms1))
+    ms2, ms1, win = vals["--mass-acc"], vals["--mass-acc-ms1"], vals["--window"]
+    pairs = (("--mass-acc", ms2), ("--mass-acc-ms1", ms1), ("--window", win))
     missing = [k for k, v in pairs if v is None]
-    auto = [k for k, v in pairs if v == 0]
+    auto = [k for k, v in pairs if v == 0]      # 0 means "optimise automatically"
     if missing or auto:
         why = []
         if missing:
             why.append("not set: " + ", ".join(missing))
         if auto:
             why.append("auto (0): " + ", ".join(auto))
-        return {"fixed": False, "ms2": ms2, "ms1": ms1, "reason": "; ".join(why)}
-    return {"fixed": True, "ms2": ms2, "ms1": ms1,
-            "reason": f"fixed (MS1 {ms1} ppm / MS2 {ms2} ppm)"}
+        return {"fixed": False, "ms2": ms2, "ms1": ms1, "window": win,
+                "reason": "; ".join(why)}
+    return {"fixed": True, "ms2": ms2, "ms1": ms1, "window": win,
+            "reason": f"fixed (MS1 {ms1} ppm / MS2 {ms2} ppm / window {int(win)})"}
 
 
 def header(name, cpus, mem_gb, hours, partition, account, qos=None, array=None):
@@ -189,16 +201,21 @@ def main():
     DN = dotnet_prefix(raws) + a.diann     # .NET 8 export prefix when inputs are Thermo .raw
     flags = read_cfg_flags(a.cfg)
 
-    # The chain is only valid with pinned mass accuracy (steps 3/5 reuse .quant files).
+    # The chain is only valid with pinned mass accuracy AND scan window (steps 3/5
+    # reuse .quant files; see mass_acc_status for DIA-NN's own warning).
     ma = mass_acc_status(a.cfg)
     if not ma["fixed"] and not a.allow_auto_mass_acc:
         sys.exit(
-            f"Mass accuracy is not fixed in {a.cfg or '(no --cfg given)'} -- {ma['reason']}.\n"
-            "The 5-step chain reuses .quant files across steps, so auto-calibration would be\n"
-            "applied inconsistently between passes and the cross-run report would be wrong.\n"
-            "Fix by re-running estimate_params.py with the real instrument so it pins the\n"
-            "DIA-NN recommended values (timsTOF 15/15, Astral 4/10, Orbitrap by resolution),\n"
-            "or run the single-shot search instead, which calibrates safely on its own.\n"
+            f"Not parallel-safe: {a.cfg or '(no --cfg given)'} -- {ma['reason']}.\n"
+            "The 5-step chain reuses .quant files across steps, so anything DIA-NN\n"
+            "auto-optimises PER FILE (mass accuracy AND scan window) is applied\n"
+            "inconsistently between passes and then stitched together.\n"
+            "  mass accuracy -> re-run estimate_params.py with the real instrument\n"
+            "                   (timsTOF 15/15, Astral 4/10, Orbitrap by resolution)\n"
+            "  --window      -> run `probe_window.py` on ONE of these files to measure\n"
+            "                   the radius DIA-NN infers, then pin that value. Do NOT\n"
+            "                   guess it: it depends on the acquisition scheme.\n"
+            "Or run the single-shot search instead, which calibrates safely on its own.\n"
             "To override deliberately: --allow-auto-mass-acc.")
     if not ma["fixed"]:
         sys.stderr.write(f"[diann_parallel] WARNING: proceeding with auto mass accuracy "

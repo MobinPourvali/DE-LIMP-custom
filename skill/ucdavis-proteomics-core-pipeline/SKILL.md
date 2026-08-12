@@ -575,10 +575,20 @@ python3 scripts/run_search.py --tools ~/.proteomics-pipeline/tools/tools.json \
   `search_provenance.json`. This matches facility practice in DE-LIMP: per-file passes
   run as a SLURM array instead of one long single-node job.
   - It falls back to a single search, with the reason printed, when there's **no SLURM**
-    (the chain is job arrays — nothing to fall back to) or when **mass accuracy is on
-    auto**. Mass accuracy is the one you can fix: steps 3/5 reuse the `.quant` files, so
-    auto-calibration would differ between passes. Re-run `estimate_params.py` with the
-    **real instrument** (step 6b) to pin it and parallel turns itself on.
+    (the chain is job arrays — nothing to fall back to) or when the cfg is **not
+    parallel-safe**. Steps 3/5 reuse the `.quant` files, so *anything* DIA-NN
+    auto-optimises per file gets stitched together inconsistently — DIA-NN's own warning
+    names **mass accuracy AND scan window**. Both must be pinned:
+    - **mass accuracy** — re-run `estimate_params.py` with the **real instrument** (step 6b).
+    - **`--window`** — `estimate_params.py` omits it, which means auto. **Measure it**,
+      never guess: on an 18-file poplar run DIA-NN inferred radius 7 for seventeen files
+      and 8 for one, and the chain combined them. After step 1 has built the library:
+      ```bash
+      python3 scripts/probe_window.py --diann "<diann cmd>" --raw <one file> \
+          --fasta <f.fasta> --lib <step1.predicted.speclib> --write-cfg <params.cfg>
+      ```
+      It exits as soon as DIA-NN logs `Scan window radius set to N` (during calibration),
+      so it costs minutes. One file covers a set acquired with the same method.
   - Override either way with `--no-parallel` (force one job) or `--parallel-threshold N`.
   - It **generates** the chain but does not submit it. Submit `<out>/submit.sh` (over
     `hive_exec.sh` on HIVE), then watch the **step-5** job — that's the one that writes
