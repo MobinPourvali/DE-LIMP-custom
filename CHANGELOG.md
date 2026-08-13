@@ -1,5 +1,35 @@
 # Changelog
 
+## [4.0.3] - 2026-08-13
+
+### Fixed
+- **Parallel DIA-NN searches silently discarded `--xic`.** The 5-step chain stripped
+  `--xic` from the shared flags and never re-added it, so a user who enabled XIC
+  extraction got chromatograms from a single-job search but **nothing** from the
+  parallel chain — the two paths disagreed with no warning. `--xic` is now re-added to
+  **step 4 only** (the final per-file pass). Step 2 searches the predicted library so
+  its identifications are not final, and steps 3/5 run `--use-quant`, which reuses
+  `.quant` files without re-reading raw spectra — DIA-NN accepts `--xic` there, logs
+  that it will extract, and writes nothing.
+
+### Notes (no change required — verified during the same audit)
+- **Scan window is already parallel-safe.** DIA-NN warns that combining `.quant` reuse
+  with auto-optimisation of mass accuracy *or scan window* gives inconsistent results.
+  DE-LIMP forces `mass_acc_mode = "manual"` for parallel runs, which emits `--window`,
+  and all five steps were verified to carry the identical value. (The bundled skill did
+  **not** do this and was fixed separately; an 18-file run there inferred window radius
+  7 for seventeen files and 8 for one, then combined them.)
+- The pinned window is the hardcoded default (`scan_window = 6`) rather than a value
+  measured from the data. That is *consistent*, which is what parallel-safety requires,
+  but it is not necessarily *optimal* — the radius depends on the acquisition scheme.
+  Left as-is deliberately: changing the default would alter results for every existing
+  user. `helpers_search.R` already parses `Scan window radius` from DIA-NN logs if a
+  measured value is ever wanted.
+- Quant-file verification already exists (`quant_verify_block`) and tolerates up to 5%
+  (minimum 3) missing files with a warning, logging them to `.excluded_stepN.txt`. Worth
+  knowing: DIA-NN 2.6 **exits 0 on fatal errors**, so job exit codes cannot be trusted
+  and this artefact check is the real safety net.
+
 All notable changes to DE-LIMP will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
