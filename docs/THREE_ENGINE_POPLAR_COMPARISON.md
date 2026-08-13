@@ -49,6 +49,27 @@ precisely because its denominator is the largest; in absolute terms DIA-NN still
 most proteins present in all 18 runs (3,288, vs Spectronaut 3,180 and Radiant 2,777).
 Do not read that column as a quality ranking.
 
+## Known defect in the DIA-NN column (not corrected — deliberate)
+
+This DIA-NN run used an **inconsistent scan window**. DIA-NN optimises the radius per
+file when `--window` is absent, and the cfg's `--window 0` was rejected outright
+(`WARNING: scan window radius should be a positive integer`), so it fell back to auto:
+**seventeen files got radius 7, one got 8**. Steps 3/5 then reused `.quant` files across
+that split, which DIA-NN itself warns against:
+
+> WARNING: combining reuse of .quant files with automatic optimisation of mass
+> accuracies or scan window will lead to results that are different from those of the
+> original analysis that produced the .quant files and is strongly not recommended
+
+**Decision (2026-08-13): not re-run.** One file of eighteen differed by one radius unit,
+and the DIA-NN-vs-Radiant gap is +48% — far too wide for that to flip the ranking. So the
+*ordering* in this table stands.
+
+What does NOT stand is the exact figure: **4,693 is not a reproducible number**, and it
+should not be quoted as a DIA-NN benchmark, put in a methods section, or compared against
+a future DIA-NN run. The chain now pins the window itself (step 1b), so any new run is
+reproducible and would supersede this column.
+
 ## Confounds — do not quote these numbers as a clean engine benchmark
 
 1. **The libraries are not the same.** Spectronaut used its own project library; DIA-NN
