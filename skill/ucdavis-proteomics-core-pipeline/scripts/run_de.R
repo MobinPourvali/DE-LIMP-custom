@@ -141,17 +141,42 @@ if (method == "dpc") {
   # q-column stops rather than producing unfiltered results that look filtered.
   # (FragPipe's own report.tsv does carry Lib.Q.Value / Lib.PG.Q.Value -- columns 39
   # and 40 -- so it needs no special handling; it works with limpa's defaults.)
+  #
+  # The columns in q_alt are applied WHENEVER THEY EXIST, not only as a fallback for a missing
+  # run-level one. Per the DIA-NN README (master), they are not all the same kind of filter:
+  #   Global.Q.Value / Global.PG.Q.Value  "global" -- experiment-wide
+  #   PG.Q.Value                          "run-specific q-value for the protein group"
+  # Q.Value / Lib.Q.Value / Lib.PG.Q.Value on their own do not control FDR across an
+  # experiment: the union of run-level-passing IDs over N runs sits above the nominal cutoff
+  # and grows with N. Lib.* is documented as "'global' if the library was created by DIA-NN",
+  # but that cannot be relied on -- in some reports both Lib columns are identically 0 and
+  # filter nothing -- which is why Global.* is applied explicitly rather than assumed.
+  # Measured on identical input (373-run DIA-NN 2.6 report, mouse, 4 cohorts, contaminants
+  # removed, Empirical.Quality >= 0.75 -- only the q-column set differs): the three extra
+  # columns keep out 227 protein groups that the run-level three admit, 6,531 vs 6,758.
+  # Those 227 carry a median of ONE precursor and appear in 9.4% of runs, against 12
+  # precursors and 82.3% for the protein groups both sets retain.
+  # Which column does the work is not what the name suggests: of the rows dropped,
+  # PG.Q.Value accounts for 22,465 (20,447 of them uniquely), Global.PG.Q.Value 15,752 and
+  # Global.Q.Value 7,873 -- i.e. the RUN-SPECIFIC column is the largest single contributor.
+  # NOTE on cutoffs: DIA-NN recommends PG.Q.Value "at 0.01 to 0.05, typically 0.05 is
+  # sufficient". This applies the single --q-cutoff (default 0.01) to it, a deliberate
+  # tightening that matches build_maxlfq.R so the two --method values agree on FDR. On this
+  # report the choice is nearly free: 0.01 vs 0.05 differs by 2 protein groups (6,564/6,566).
   q_want <- c("Q.Value", "Lib.Q.Value", "Lib.PG.Q.Value")
   q_alt  <- c("Global.Q.Value", "Global.PG.Q.Value", "PG.Q.Value")
   q_use  <- intersect(q_want, have_cols)
   q_extra <- intersect(setdiff(q_alt, q_use), have_cols)
-  if (length(setdiff(q_want, have_cols)) > 0) {
+  if (length(q_extra)) {
     q_use <- unique(c(q_use, q_extra))
+    message(sprintf("[run_de] additional q-value columns present; filtering on %s",
+                    paste(q_use, collapse = " / ")))
+  }
+  if (length(setdiff(q_want, have_cols)) > 0)
     message(sprintf(paste0("[run_de] this report has no %s; limpa would apply NO filter ",
                            "for those columns without saying so. Filtering on %s instead."),
                     paste(setdiff(q_want, have_cols), collapse = " / "),
                     paste(q_use, collapse = " / ")))
-  }
   if (length(q_use) == 0)
     stop("No usable q-value column found in ", basename(input),
          " -- cannot apply identification FDR. Columns present: ",
