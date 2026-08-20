@@ -38,6 +38,16 @@ Everything lands under `~/.proteomics-pipeline/`. `source activate.sh` puts it o
 PATH so `Rscript`, `python`, `sage`, `msconvert` resolve to the env. Nothing is
 installed system-wide; deleting `~/.proteomics-pipeline/` fully uninstalls it.
 
+`activate.sh` also pins **`R_LIBS_USER`** to the env's own R library. R puts the
+per-user library (macOS `~/Library/R/<arch>/<ver>/library`, Linux
+`~/R/<platform>-library/<ver>`) *first* in `.libPaths()`, so a `limma`, `Rcpp` or
+`statmod` left there by another R build — **Homebrew R on macOS is the usual
+source** — would be loaded in preference to the env's copy. Those binaries are
+ABI-incompatible with the conda R and abort it on `library(limpa)`. If you set
+`R_LIBS_USER` yourself, unset it before sourcing `activate.sh`, or the shadowing
+comes back. Packages you install from inside the env land in the env's library and
+are removed with it.
+
 `setup.sh --check` reports readiness without installing anything.
 
 ## The search engines
