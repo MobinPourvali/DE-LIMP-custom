@@ -38,6 +38,14 @@ SETUP_JSON="$PP_HOME/setup.json"
 CHECK_ONLY=false; [ "${1:-}" = "--check" ] && CHECK_ONLY=true
 mkdir -p "$PP_HOME"
 
+# Keep this env's R away from a per-user R library built against a DIFFERENT R
+# (Homebrew R on macOS is the common case). R_LIBS_USER always precedes the env
+# library in .libPaths(), so such packages are loaded in preference to the env
+# copies and abort R on load. Pointing R_LIBS_USER at the env's own library is
+# the only reliable fix. Exported here so every Rscript call below is isolated
+# too, and re-emitted into activate.sh for run time.
+export R_LIBS_USER="$ENV_PREFIX/lib/R/library"
+
 OS="$(uname -s | tr '[:upper:]' '[:lower:]')"   # darwin | linux
 ARCH="$(uname -m)"                               # arm64 | x86_64 | aarch64
 have() { command -v "$1" >/dev/null 2>&1; }
@@ -140,13 +148,22 @@ elif [ "$OS" = "darwin" ];       then DIANN_READY=false; DIANN_NOTE="macOS: DIA-
 fi
 
 # readiness per acquisition type (for the orchestrator to gate on)
-DE_READY=false; [ -n "$RSCRIPT" ] && DE_READY=true
+# DE needs R to actually LOAD limpa/limma, not merely to exist. A shadowed or
+# ABI-mismatched library aborts R at load time, which previously still reported
+# ready_for.de = true and only surfaced as a crash inside run_de.R.
+DE_READY=false
+if [ -n "$RSCRIPT" ] && "$RSCRIPT" -e 'q(status=!(requireNamespace("limpa",quietly=TRUE)&&requireNamespace("limma",quietly=TRUE)))' >/dev/null 2>&1; then
+  DE_READY=true
+fi
 DDA_READY=false
 if [ -n "$SAGE" ] && [ -n "$RSCRIPT" ]; then DDA_READY=true; fi
 DIA_READY=false
 if $DIANN_READY && [ -n "$RSCRIPT" ]; then DIA_READY=true; fi
 
 [ -z "$RSCRIPT" ] && NOTES+=("R/Rscript not available — DE cannot run. Re-run setup.sh to install it into the conda env.")
+if [ -n "$RSCRIPT" ] && ! $DE_READY; then
+  NOTES+=("R is present but limpa/limma failed to LOAD — DE cannot run. Re-run setup.sh; if it persists, delete $ENV_PREFIX and re-run to rebuild the R stack.")
+fi
 [ -z "$SAGE" ]    && NOTES+=("Sage not found — DDA search unavailable until the conda env is built.")
 [ "$OS" = "darwin" ] && [ -z "$MSCONVERT" ] && NOTES+=("msconvert is Linux-only on bioconda. On macOS, Sage can only search files ALREADY in mzML; convert Bruker .d / Thermo .raw elsewhere first, or use DIA-NN (which reads .d/.raw natively) for DIA data.")
 
@@ -156,7 +173,19 @@ if ! $CHECK_ONLY || [ ! -f "$ACTIVATE" ]; then
 # source this to put the proteomics-pipeline environment on PATH
 export PROTEOMICS_PIPELINE_HOME="$PP_HOME"
 export PATH="$ENV_PREFIX/bin:\$PATH"
-[ -f "$PP_HOME/diann_docker_image" ] && export DIANN_DOCKER_IMAGE="\$(cat "$PP_HOME/diann_docker_image")"
+
+# Pin R_LIBS_USER to this env's own library. Without it R prepends the per-user
+# library (macOS: ~/Library/R/<arch>/<ver>/library) to .libPaths(); when that was
+# populated by a different R build, this R loads those binaries and segfaults on
+# library(limpa).
+export R_LIBS_USER="$ENV_PREFIX/lib/R/library"
+
+# Keep this an if-block, not '[ -f ... ] && export ...'. As the last command in a
+# sourced file the && form returns 1 whenever the image is absent, so
+# 'source activate.sh && <cmd>' silently skips <cmd>.
+if [ -f "$PP_HOME/diann_docker_image" ]; then
+  export DIANN_DOCKER_IMAGE="\$(cat "$PP_HOME/diann_docker_image")"
+fi
 EOF
 fi
 
