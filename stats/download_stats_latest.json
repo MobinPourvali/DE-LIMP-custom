@@ -1,10 +1,10 @@
 {
-  "generated_at": "2026-08-24 08:36:02",
+  "generated_at": "2026-08-31 15:39:28",
   "github": {
     "repo": null,
     "stars": 13,
     "forks": 1,
-    "open_issues": 2,
+    "open_issues": 0,
     "traffic_14d": {
       "clones": null,
       "clones_unique": null,
@@ -17,11 +17,11 @@
   "huggingface": {
     "space": null,
     "likes": 1,
-    "last_modified": "2026-08-21T00:02:46.000Z"
+    "last_modified": "2026-08-28T17:52:45.000Z"
   },
   "docker": {
     "image": null,
-    "pull_count": 433,
+    "pull_count": 445,
     "stars": 0
   }
 }
