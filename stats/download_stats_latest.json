@@ -1,10 +1,10 @@
 {
-  "generated_at": "2026-09-07 13:47:02",
+  "generated_at": "2026-09-14 14:33:10",
   "github": {
     "repo": null,
     "stars": 13,
     "forks": 1,
-    "open_issues": 1,
+    "open_issues": 2,
     "traffic_14d": {
       "clones": null,
       "clones_unique": null,
@@ -21,7 +21,7 @@
   },
   "docker": {
     "image": null,
-    "pull_count": 445,
+    "pull_count": 448,
     "stars": 0
   }
 }
